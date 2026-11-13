@@ -19,6 +19,7 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
+          token: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
 
       - name: Prepare upstream mirror and integration PR
         shell: bash
