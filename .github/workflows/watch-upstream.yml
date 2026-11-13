@@ -93,6 +93,8 @@ jobs:
 
           [Review upstream changes](${compare_url})
 
+          [Prepare upstream integration PR](https://github.com/markthesuperpro/misterdownloadmanager/actions/workflows/prepare-upstream-pr.yml)
+
           This notification does not modify or merge your fork.
 
           Review the changes before synchronizing your main branch.
