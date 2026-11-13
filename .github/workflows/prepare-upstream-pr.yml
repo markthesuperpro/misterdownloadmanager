@@ -1,0 +1,144 @@
+
+name: Prepare upstream integration PR
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  prepare:
+    if: github.repository == 'markthesuperpro/misterdownloadmanager'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout fork main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Prepare upstream mirror and integration PR
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git remote add upstream \
+            https://github.com/anefzaoui/misterdownloadmanager.git
+
+          git fetch --no-tags origin main
+          git fetch --no-tags upstream main
+
+          fork="refs/remotes/origin/main"
+          upstream="refs/remotes/upstream/main"
+
+          # Keep an exact upstream mirror.
+          # This push only permits fast-forward updates.
+          git push origin \
+            "$upstream:refs/heads/upstream-sync"
+
+          # Check that both histories share a common ancestor.
+          if ! git merge-base "$fork" "$upstream" >/dev/null; then
+            echo "::error::No common Git history."
+            exit 1
+          fi
+
+          # Skip if your main already contains upstream main.
+          if git merge-base --is-ancestor "$upstream" "$fork"; then
+            echo "Your fork already contains upstream main."
+            exit 0
+          fi
+
+          upstream_sha="$(git rev-parse "$upstream")"
+          fork_sha="$(git rev-parse "$fork")"
+
+          upstream_short="${upstream_sha:0:12}"
+          fork_short="${fork_sha:0:12}"
+
+          candidate="upstream-integration-${upstream_short}-${fork_short}"
+
+          # Avoid overwriting an existing candidate branch.
+          if git ls-remote --exit-code --heads origin \
+              "refs/heads/$candidate" >/dev/null 2>&1; then
+
+            existing_pr="$(gh pr list \
+              --repo "$GITHUB_REPOSITORY" \
+              --head "$candidate" \
+              --state open \
+              --json number \
+              --jq '.[0].number // empty')"
+
+            if [ -n "$existing_pr" ]; then
+              echo "Integration PR #$existing_pr already exists."
+              exit 0
+            fi
+
+            echo "::error::Candidate branch already exists without an open PR."
+            echo "Inspect or delete that branch through GitHub before retrying."
+            exit 1
+          fi
+
+          # Start from your current main.
+          git switch --create "$candidate" "$fork"
+
+          # Begin the merge without automatically committing.
+          set +e
+          git merge --no-commit --no-ff "$upstream"
+          merge_status=$?
+          set -e
+
+          echo "Merge exit status: $merge_status"
+
+          # Enforce your permanent path exclusions.
+          git rm -r -f --ignore-unmatch -- \
+            .claude/ \
+            extension/ \
+            .well-known/funding-manifest-urls
+
+          # Stop if conflicts remain outside the exclusions.
+          unresolved="$(git diff --name-only --diff-filter=U)"
+
+          if [ -n "$unresolved" ]; then
+            echo "::error::Unresolved conflicts remain:"
+            printf '%s\n' "$unresolved"
+            exit 1
+          fi
+
+          # Confirm a merge is actually in progress.
+          if ! git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+            echo "::error::Merge did not reach a committable state."
+            exit 1
+          fi
+
+          # Finalize the merge candidate.
+          git add -A
+
+          git commit --allow-empty \
+            -m "Merge upstream main while preserving local exclusions"
+
+          # Publish only the candidate branch.
+          git push origin "$candidate"
+
+          # Create the review pull request.
+          gh pr create \
+            --repo "$GITHUB_REPOSITORY" \
+            --base main \
+            --head "$candidate" \
+            --title "Sync upstream main ($upstream_short)" \
+            --body "Automatically prepared upstream integration.
+
+          Upstream: anefzaoui/misterdownloadmanager
+          Exclusions: .claude/, extension/, .well-known/funding-manifest-urls
+
+          Review all changes before merging.
+
+          This workflow does not modify main."
