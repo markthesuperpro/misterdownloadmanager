@@ -65,7 +65,7 @@ jobs:
           upstream_short="${upstream_sha:0:12}"
           fork_short="${fork_sha:0:12}"
 
-          candidate="upstream-integration-${upstream_short}-${fork_short}"
+          candidate="upstream-integration-${upstream_short}-${fork_short}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
           # Avoid overwriting an existing candidate branch.
           if git ls-remote --exit-code --heads origin \
@@ -99,10 +99,12 @@ jobs:
 
           echo "Merge exit status: $merge_status"
 
-          # Enforce your permanent path exclusions.
+          # Restore the complete extension folder from upstream.
+          git restore --source=MERGE_HEAD --staged --worktree -- extension/
+
+          # Keep the other exclusions.
           git rm -r -f --ignore-unmatch -- \
             .claude/ \
-            extension/ \
             .well-known/funding-manifest-urls
 
           # Stop if conflicts remain outside the exclusions.
@@ -138,7 +140,8 @@ jobs:
             --body "Automatically prepared upstream integration.
 
           Upstream: anefzaoui/misterdownloadmanager
-          Exclusions: .claude/, extension/, .well-known/funding-manifest-urls
+          Exclusions: .claude/, .well-known/funding-manifest-urls
+          Restored: extension/ from upstream main
 
           Review all changes before merging.
 
