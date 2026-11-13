@@ -557,6 +557,47 @@ Bug fixes from the first days of 0.5.0, a Safari extension, and more file types.
 
 These ship in the next version.
 
+- ✅ Torrents: File Properties closes with OK, instead of asking for an http(s) or ftp(s)
+  address; a torrent's magnet link is shown read only there
+  ([#904](https://github.com/anefzaoui/misterdownloadmanager/issues/904))
+- ✅ Tests: the test server's HLS videos carry a real picture (H.264), so its video and sound
+  tracks merge into one file as a site's do; its video tracks held only sound, which made the
+  merge fail ("Error opening output files: Invalid argument"). Real sites' videos merged already
+- ✅ macOS: .torrent files open in MDM from Finder (double-click, Open With, the Dock's icon) and
+  magnet links from the browser, and Torrent settings can make MDM their default app there
+  ([#698](https://github.com/anefzaoui/misterdownloadmanager/issues/698))
+- ✅ Windows: a menu closes at once when you click outside MDM, instead of 0.4 seconds later
+  ([#859](https://github.com/anefzaoui/misterdownloadmanager/issues/859))
+- ✅ No "The window stopped responding" report in the first minute after the computer wakes from
+  sleep, while its disk, network and screen come back: such a stall is logged, and reported only
+  if it lasts longer; every freeze report says what the window was doing when it stopped
+  ([#574](https://github.com/anefzaoui/misterdownloadmanager/issues/574),
+  [#613](https://github.com/anefzaoui/misterdownloadmanager/issues/613))
+- ✅ Windows 10 with a style theme (Metro, Adwaita, Aero…): no black band above the main window's
+  title bar, and its menus and clicks land where they show; framed as on Windows 11, as the
+  progress window already was ([#802](https://github.com/anefzaoui/misterdownloadmanager/issues/802))
+- ✅ A stream the browser played (an .m3u8) is looked up and downloaded with the Referer, Origin
+  and cookies the browser sent with it, for its playlists and every piece too: a site's video
+  server that serves its own pages' players only answered 403
+  ([#900](https://github.com/anefzaoui/misterdownloadmanager/issues/900))
+- ✅ A video of unknown size no longer reads 99.9 % from its first second while yt-dlp downloads it,
+  and a video named after a page titled with its file's name gets its extension once (Dropbox's
+  `Episode 31.mp4.mp4`) ([#622](https://github.com/anefzaoui/misterdownloadmanager/issues/622))
+- ✅ Tests: the five that checked a long list is read in linear time against a fixed number of
+  seconds (one failed on a slow macOS runner) now time the same work at two sizes, eight times
+  apart, and fail only when the larger one costs over 24 times as much (a square costs 64 times),
+  whatever the machine's speed
+- ✅ Touch screens: a tap on a menu's item chooses it (the menu bar's, right-click menus,
+  drop-downs), where only a mouse could
+  ([#733](https://github.com/anefzaoui/misterdownloadmanager/issues/733))
+- ✅ A video's Address is its file's (the stream MDM downloads) in the progress window, Download
+  complete and File Properties, its page the web page it was obtained from; a download's page and
+  Referer are kept after a restart
+  ([#795](https://github.com/anefzaoui/misterdownloadmanager/issues/795))
+- ✅ The progress window's connections table while a video downloads: MDM's own connections (as
+  many as Options → Connection gives), and yt-dlp's one connection while it looks the page up or
+  downloads a live stream itself, instead of an empty table
+  ([#793](https://github.com/anefzaoui/misterdownloadmanager/issues/793))
 - ✅ After the last byte, the progress window says **Verifying… (45%)** or **Merging… (45%)**
   and the list **45% verified**, the bar showing it in the accent colour, and **Finishing…** rather than
   **Connecting…**; a finished download's map of parts has no gaps
@@ -794,7 +835,9 @@ These ship in the next version.
   the program under the pointer takes: the drag runs beside the window
   ([#561](https://github.com/anefzaoui/misterdownloadmanager/issues/561))
 - ✅ The video button keeps one corner over YouTube's thumbnail previews, within the pointer's reach
-  ([#560](https://github.com/anefzaoui/misterdownloadmanager/issues/560))
+  ([#560](https://github.com/anefzaoui/misterdownloadmanager/issues/560)), and over a player whose
+  settings button comes and goes as the pointer moves, checked in a real browser
+  ([#899](https://github.com/anefzaoui/misterdownloadmanager/issues/899))
 - ✅ Menus: moving on from an item with a submenu closes the submenu at once, and only the item under
   the pointer is lit ([#579](https://github.com/anefzaoui/misterdownloadmanager/issues/579))
 - ✅ Chromium browsers: a download MDM's extension leaves to the browser keeps the file name and
@@ -905,9 +948,11 @@ These ship in a later version, when they're ready.
 - 🔍 A site's bot check refusing MDM's request (testfile.org, a Cloudflare challenge): the
   message now says so ([#376](https://github.com/anefzaoui/misterdownloadmanager/issues/376)); a
   way to hand the download back to the browser is still to decide
-- 🔍 A 10-second freeze of the window after a night left open
-  ([#304](https://github.com/anefzaoui/misterdownloadmanager/issues/304)): most likely the
-  computer waking from sleep; waiting on the reporter's full report
+- 🔍 The window not answering for up to half a minute just after the computer wakes, while MDM
+  waits in the notification area ([#574](https://github.com/anefzaoui/misterdownloadmanager/issues/574),
+  [#613](https://github.com/anefzaoui/misterdownloadmanager/issues/613),
+  [#304](https://github.com/anefzaoui/misterdownloadmanager/issues/304)): no longer reported as
+  a freeze; what it waits on is to be seen in a test build's log
 
 ## Planned
 
