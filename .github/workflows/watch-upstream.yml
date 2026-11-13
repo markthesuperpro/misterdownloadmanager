@@ -1,0 +1,106 @@
+
+name: Watch upstream updates
+
+on:
+  schedule:
+    - cron: "37 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    if: github.repository == 'markthesuperpro/misterdownloadmanager'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Compare upstream and fork
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+
+        run: |
+          set -euo pipefail
+
+          work="$(mktemp -d)"
+
+          git -C "$work" init -q
+
+          git -C "$work" remote add fork \
+            "https://github.com/${REPO}.git"
+
+          git -C "$work" remote add upstream \
+            "https://github.com/anefzaoui/misterdownloadmanager.git"
+
+          git -C "$work" fetch --quiet --no-tags fork main
+          git -C "$work" fetch --quiet --no-tags upstream main
+
+          fork="refs/remotes/fork/main"
+          upstream="refs/remotes/upstream/main"
+
+          base="$(git -C "$work" merge-base \
+            "$fork" "$upstream" || true)"
+
+          if [ -z "$base" ]; then
+            echo "::error::No common Git history found."
+            exit 1
+          fi
+
+          if git -C "$work" merge-base \
+              --is-ancestor "$upstream" "$fork"; then
+            echo "Your fork already contains upstream/main."
+            exit 0
+          fi
+
+          count="$(git -C "$work" rev-list \
+            --count "$fork..$upstream")"
+
+          if [ "$count" -eq 0 ]; then
+            echo "No upstream-only commits found."
+            exit 0
+          fi
+
+          sha="$(git -C "$work" rev-parse "$upstream")"
+          short="${sha:0:12}"
+
+          compare_url="https://github.com/anefzaoui/misterdownloadmanager/compare/${base}...${sha}"
+
+          existing="$(gh issue list \
+            --repo "$REPO" \
+            --state all \
+            --search "in:title $short" \
+            --json number \
+            --jq '.[0].number // empty')"
+
+          if [ -n "$existing" ]; then
+            echo "Notification already exists: #$existing"
+            exit 0
+          fi
+
+          body="$(cat <<EOF
+          @${OWNER}
+
+          New commits were detected in the upstream repository.
+
+          **Upstream:** anefzaoui/misterdownloadmanager
+          **Branch:** main
+          **Latest commit:** ${sha}
+          **Missing commits:** ${count}
+
+          [Review upstream changes](${compare_url})
+
+          This notification does not modify or merge your fork.
+
+          Review the changes before synchronizing your main branch.
+          EOF
+          )"
+
+          gh issue create \
+            --repo "$REPO" \
+            --title "Upstream update available: $short" \
+            --assignee "$OWNER" \
+            --body "$body"
