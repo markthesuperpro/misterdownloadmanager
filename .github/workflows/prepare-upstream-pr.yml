@@ -24,7 +24,7 @@ jobs:
       - name: Prepare upstream mirror and integration PR
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
 
         run: |
           set -euo pipefail
