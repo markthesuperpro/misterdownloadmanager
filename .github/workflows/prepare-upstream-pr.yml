@@ -105,6 +105,7 @@ jobs:
           # Keep the other exclusions.
           git rm -r -f --ignore-unmatch -- \
             .claude/ \
+            .impeccable/ \
             .well-known/funding-manifest-urls
 
           # Stop if conflicts remain outside the exclusions.
