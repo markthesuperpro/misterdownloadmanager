@@ -102,11 +102,20 @@ jobs:
           # Restore the complete extension folder from upstream.
           git restore --source=MERGE_HEAD --staged --worktree -- extension/
 
-          # Keep the other exclusions.
+          # Keep the excluded files and folders from your fork.
           git rm -r -f --ignore-unmatch -- \
             .claude/ \
             .impeccable/ \
+            CLAUDE.md \
             .well-known/funding-manifest-urls
+
+          # Resolve README conflict by preserving your fork's version.
+          # "ours" means your fork's main branch (not upstream).
+          if git ls-files -u -- README.md | grep -q .; then
+            git checkout --ours -- README.md
+            git add README.md
+            echo "Preserved fork README.md."
+          fi
 
           # Stop if conflicts remain outside the exclusions.
           unresolved="$(git diff --name-only --diff-filter=U)"
