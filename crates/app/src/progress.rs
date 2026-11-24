@@ -1,7 +1,7 @@
 //! The per-download progress dialog, painted to IDM 6.42's pixels
 //! (notes/ui-spec/progress-dialog.md). Coordinates are client pixels from the spec.
 
-use egui::{Color32, Pos2, Ui, ViewportBuilder, ViewportId, vec2};
+use egui::{Color32, Pos2, Ui, ViewportId, vec2};
 use mdm_engine::Snapshot;
 use mdm_engine::download::ConnStatus;
 
@@ -276,8 +276,18 @@ impl Glide {
     }
 }
 
+/// A stopped, failed or finished transfer must not leave a green indicator behind.
+#[cfg(windows)]
+fn taskbar_fraction(item: &Item) -> Option<f64> {
+    (item.status == Status::Downloading)
+        .then(|| item.fraction())
+        .flatten()
+}
+
 pub struct Progress {
     pub id: u64,
+    #[cfg(windows)]
+    taskbar: crate::win32::TaskbarProgress,
     details: bool,
     tab: Tab,
     /// Tabs taken off the strip with their "Hide tab" button (#326), for this window.
@@ -313,6 +323,9 @@ pub struct Progress {
     pub minimize_to_tray: bool,
     /// MDM's main window is shown (set by the app each frame): the glide's frames draw it too.
     pub main_shown: bool,
+    /// The speed limit holding the download back (set by the app each frame, #1191): its
+    /// Transfer rate names it.
+    pub limit: Option<crate::model::Limit>,
     /// Options on completion, used when "Show download complete dialog" is off.
     hang_up: bool,
     exit: bool,
@@ -339,6 +352,9 @@ pub struct Progress {
     /// on a sleeping drive or a network share can take seconds to answer. The reason shown
     /// stays the last one meanwhile (the rename is checked again when it is carried out).
     pub rename_guard: Option<(u64, crate::launch::Asked<u64, Option<&'static str>>)>,
+    /// A live stream's window, once seen as one: its Pause button is laid out for "Stop and
+    /// save" too, and keeps that size when the label changes back.
+    live_stream: bool,
 }
 
 pub enum Action {
@@ -372,6 +388,8 @@ impl Progress {
     pub fn new(id: u64, show_complete: bool) -> Self {
         Progress {
             id,
+            #[cfg(windows)]
+            taskbar: crate::win32::TaskbarProgress::new(),
             details: true,
             tab: Tab::Status,
             hidden_tabs: Vec::new(),
@@ -392,6 +410,7 @@ impl Progress {
             tray: false,
             minimize_to_tray: false,
             main_shown: true,
+            limit: None,
             hang_up: false,
             exit: false,
             turn_off_on: false,
@@ -407,7 +426,25 @@ impl Progress {
             rename_disabled_reason: None,
             rename_guard_stamp: None,
             rename_guard: None,
+            live_stream: false,
         }
+    }
+
+    /// Updated by the clock too, while the main window is minimized and draws no UI.
+    #[cfg(windows)]
+    pub fn update_taskbar(&mut self, item: Option<&Item>) {
+        self.taskbar.update(item.and_then(taskbar_fraction));
+    }
+
+    #[cfg(windows)]
+    fn needs_frame(&self, ctx: &egui::Context, key: egui::Id, want: &Framed) -> bool {
+        // Completion can remove a Progress without a closing UI pass. A fresh controller must
+        // bind its new HWND even if egui still holds the preceding window's frame settings.
+        self.taskbar.window().is_none()
+            || ctx
+                .data(|d| d.get_temp::<Framed>(key.with("framed")))
+                .as_ref()
+                != Some(want)
     }
 
     fn status_drop(&self) -> f32 {
@@ -520,11 +557,30 @@ impl Progress {
         let vid = ViewportId::from_hash_of(("progress", self.id));
         let buttons = caption_buttons(self.tray);
         let key = egui::Id::unique(("progress-pos", self.id));
+        #[cfg(windows)]
+        if crate::dialogs::window_was_gone(ctx, key.with("binding-pass")) {
+            // The same lifecycle as keep_theme: a viewport can disappear without a close
+            // action. Forget its HWND before choosing the new window's discovery title.
+            self.taskbar.window_gone();
+            ctx.data_mut(|d| d.remove::<Framed>(key.with("framed")));
+        }
         let title_now = title.clone();
+        // Hidden windows need a unique native title until their HWND is bound: two downloads
+        // can have the same filename and percentage. The displayed title is set before reveal.
+        #[cfg(windows)]
+        let hwnd = self.taskbar.window();
+        #[cfg(not(windows))]
+        let hwnd = None;
+        let native_title = if cfg!(windows) && hwnd.is_none() {
+            format!("mdm-progress-{}", self.id)
+        } else {
+            title
+        };
         // Hidden until dialogs::keep_theme has given it its theme.
-        let mut builder = crate::quiet(ViewportBuilder::default())
+        let mut builder = crate::quiet(crate::window_builder())
             .with_visible(false)
-            .with_title(title)
+            // The taskbar shows it: without isolates (#919).
+            .with_title(crate::i18n::os_text(&native_title))
             .with_inner_size(shown)
             // IDM's progress window has 2 px borders and a fixed size. On Windows the sizing
             // frame is asked for and win32::progress_frame trims its borders, disables resizing
@@ -540,8 +596,9 @@ impl Progress {
         // Minimize hides it in the notification area when asked (and a tray can bring it back).
         let minimize_hides = self.tray && self.minimize_to_tray;
         // The window, once its frame is applied (Windows: its caption parts go to its hit test).
-        let hwnd = ctx.data(|d| d.get_temp::<isize>(key.with("hwnd")));
         let action = ctx.show_viewport_immediate(vid, builder, |ui, _| {
+            crate::dialogs::keyboard_to_click(ui.ctx());
+            winui::name_window(ui, &title_now);
             // Painted in the pass that closes it too (see dialogs::close_requested).
             let close = crate::dialogs::close_requested(ui);
             if !close && minimize_hides && ui.ctx().input(|i| i.viewport().minimized == Some(true))
@@ -575,14 +632,15 @@ impl Progress {
                         Some(CaptionButton::ToTray) => Action::Hide,
                         Some(CaptionButton::Minimize) if minimize_hides => Action::Hide,
                         Some(CaptionButton::Minimize) => {
-                            ui.ctx()
-                                .send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                            crate::dialogs::minimize(ui.ctx(), hwnd);
                             action
                         }
                         _ => action,
                     }
                 })
                 .inner;
+            // Its menu opened from the keyboard, said to screen readers (#328).
+            crate::chrome::tell_screen_readers(ui.ctx());
             if close {
                 return Action::Close;
             }
@@ -616,20 +674,27 @@ impl Progress {
                 .any(|(b, _)| *b == CaptionButton::ToTray)
                 .then(|| crate::i18n::t("Hide to the notification area").to_owned());
             let want: Framed = (shown, (scale * 1000.0).round() as u32, hide);
-            if ctx
-                .data(|d| d.get_temp::<Framed>(key.with("framed")))
-                .as_ref()
-                != Some(&want)
-                && let Some(h) =
-                    crate::win32::thin_frame(&title_now, shown, scale, want.2.as_deref())
+            if self.needs_frame(ctx, key, &want)
+                && let Some(h) = hwnd.map_or_else(
+                    || crate::win32::thin_frame(&native_title, shown, scale, want.2.as_deref()),
+                    |h| crate::win32::thin_frame_on(h, shown, scale, want.2.as_deref()),
+                )
             {
                 ctx.data_mut(|d| {
                     d.insert_temp(key.with("framed"), want);
-                    d.insert_temp(key.with("hwnd"), h);
                 });
+                self.taskbar.set_window(h);
+                ctx.send_viewport_cmd_to(
+                    vid,
+                    egui::ViewportCommand::Title(crate::i18n::os_text(&title_now)),
+                );
             }
         }
         let closing = matches!(action, Action::Close | Action::Cancel | Action::Hide);
+        #[cfg(windows)]
+        if closing {
+            self.taskbar.set_window(0);
+        }
         crate::dialogs::keep_theme(
             ctx,
             vid,
@@ -637,6 +702,7 @@ impl Progress {
             &title_now,
             crate::theme::dark_surface(),
             !closing,
+            true,
         );
         let action = match (action, self.pending_limit.take()) {
             (Action::None, Some((limit, remember))) => Action::Limit(limit, remember),
@@ -673,7 +739,6 @@ impl Progress {
             }
             ctx.data_mut(|d| {
                 d.remove::<Framed>(key.with("framed"));
-                d.remove::<isize>(key.with("hwnd"));
             });
         }
         action
@@ -720,9 +785,19 @@ impl Progress {
         // the file is checked or a video joined (#736), it starts again in the accent colour and
         // shows how far that is.
         let bar = r(lower, 17.0, 180.0, 513.0, 16.0);
-        match finishing_fraction(snap) {
+        let finishing = finishing_fraction(snap);
+        match finishing {
             Some(f) => winui::meter_in(&p, bar, f as f32, crate::theme::colors().accent),
             None => winui::meter(&p, bar, drawn.0 as f32),
+        }
+        // The same bar for a screen reader (#1406): the value it fills towards, which is what the
+        // page's own text says (the download's fraction; while the last bytes are checked or a
+        // video's streams joined, how far that is). Unnamed, as the list's rows are: a name is
+        // read in place of the value. A download whose size isn't known has no percentage to tell
+        // and gets no node, and neither has one that is finished (the bar is full, the text says
+        // Complete).
+        if let Some(f) = finishing.or(frac) {
+            winui::expose_progress(ui, bar, egui::Id::unique(("progress", item.id, "bar")), f);
         }
 
         let mut action = if hide { Action::Hide } else { Action::None };
@@ -745,13 +820,20 @@ impl Progress {
         // The row as wide as its labels in this language need (#192), each laid out for the
         // longer of its two labels so it keeps its size when they change; Cancel stays at the
         // window's edge.
+        let live = item.live_state();
+        self.live_stream |=
+            live.is_some() || matches!(item.video_helper(), Some(mdm_tools::streams::Helper::Live));
         let mut row = vec![
             (
                 winui::widest_label(&p, &["<< Hide details", "Show details >>"]),
                 30.0,
                 138.0,
             ),
-            (winui::widest_label(&p, &["Pause", "Resume"]), 311.0, 82.0),
+            (
+                winui::widest_label(&p, pause_labels(self.live_stream)),
+                311.0,
+                82.0,
+            ),
             ("Cancel", 422.0, 73.0),
         ];
         if web_page {
@@ -794,16 +876,7 @@ impl Progress {
             self.details = !self.details;
         }
         let running = item.status == Status::Downloading;
-        let can_resume = matches!(item.status, Status::Stopped | Status::Error);
-        let (label, pkind) = if running {
-            // i18n: verb: pause the download
-            (crate::i18n::mark("Pause"), ButtonKind::Normal)
-        } else if can_resume {
-            // i18n: verb: continue the download
-            (crate::i18n::mark("Resume"), ButtonKind::Normal)
-        } else {
-            (crate::i18n::mark("Pause"), ButtonKind::Disabled)
-        };
+        let (label, pkind) = pause_button(item.status, live);
         if winui::button(
             ui,
             r(lower, pause_at.0, 206.0, pause_at.1, 22.0),
@@ -1003,7 +1076,7 @@ impl Progress {
             crate::i18n::t("Transfer rate"),
             winui::TEXT(),
         );
-        let rate = if item.status == Status::Downloading {
+        let rate = if item.status == Status::Downloading && !item.past_last_byte() {
             model::rate(item.rate())
         } else {
             String::new()
@@ -1312,8 +1385,34 @@ impl Progress {
                 winui::text_fit(p, o.x + x, o.y + base, s, color, o.x + PAGE_TEXT_RIGHT);
             winui::copyable(ui, rect, key, s, cut);
         };
+
+        // Each row as a node of its own, named by its caption and carrying its value (#1406):
+        // the page paints them, and painted text is invisible to a reader on its own. The whole
+        // value is said, even where the row itself shows it cut with "..." ([fit] draws the cut
+        // one). A focusable label, as the help windows' blocks are (#1407): read with Tab, or
+        // from the reader's own review keys, without touching the copy menu the value keeps
+        // (Sense::focusable_noninteractive senses no clicks).
+        let spoken = |ui: &Ui, label: &str, base: f32, value: &str| {
+            let name = spoken_name(crate::i18n::t(label), value);
+            let rc = winui::rect(egui::Rect::from_min_max(
+                egui::pos2(o.x + 33.0, o.y + base - 12.0),
+                egui::pos2(o.x + PAGE_TEXT_RIGHT, o.y + base + 4.0),
+            ));
+            let resp = ui.interact(
+                rc,
+                egui::Id::unique(("status-row", item.id, label)),
+                egui::Sense::focusable_noninteractive(),
+            );
+            winui::expose(&resp, egui::Role::Label, &name, true, None);
+        };
         let web_page = item.got_web_page();
+        // A failure that takes a paragraph to explain: the reason under "Error", in the rows of
+        // the sizes and times, which say nothing then (a site's page, #701; an answer far smaller
+        // than the browser's file, #1460; a video's failed merge, what stays for Resume).
+        let explained = web_page || item.got_other_answer() || item.merge_failed();
         let status = match item.status {
+            // A live stream being recorded or saved shows no progress of its own: said first.
+            _ if let Some(live) = live_status(item.live_state()) => live.to_owned(),
             // A torrent reading and checking its files says so, not "Receiving data" (#39).
             _ if let Some(checking) = item.torrent_checking() => checking,
             // After the last byte: the file checked, a video's streams joined (#736), as the
@@ -1359,7 +1458,7 @@ impl Progress {
             // i18n: a download's status (state it is in, not a command): waiting in a queue
             Status::Queued => crate::i18n::t("Waiting").to_owned(),
             // The site's page instead of the file (#701): why, and what to do, under it.
-            Status::Error if web_page => crate::i18n::t("Error").to_owned(),
+            Status::Error if explained => crate::i18n::t("Error").to_owned(),
             Status::Error => crate::i18n::fmt(
                 // i18n: a download's status: it failed, with the reason
                 crate::i18n::t("Error: {error}"),
@@ -1378,6 +1477,12 @@ impl Progress {
             // A video's stream, not its page (#795).
             &crate::i18n::ltr(item.file_address().as_str()),
             winui::TEXT(),
+        );
+        spoken(
+            ui,
+            "Address",
+            44.0,
+            &crate::i18n::ltr(item.file_address().as_str()),
         );
         let rows: [(&str, f32, f32, String); 6] = [
             // i18n: noun: label before the download's state
@@ -1410,8 +1515,14 @@ impl Progress {
                 crate::i18n::mark("Transfer rate"),
                 112.0,
                 135.0,
-                if item.status == Status::Downloading {
-                    model::rate(item.rate())
+                // Every byte in (#736): nothing comes in while the file is checked or joined.
+                if item.status == Status::Downloading && !item.past_last_byte() {
+                    // The limit holding it back beside the speed (#1191).
+                    let rate = model::rate(item.rate());
+                    match self.limit {
+                        Some(limit) => limit.after(&rate),
+                        None => rate,
+                    }
                 } else {
                     String::new()
                 },
@@ -1446,7 +1557,7 @@ impl Progress {
         for (label, base, vx, value) in rows {
             // A site's page instead of the file (#701): its sizes and times say nothing, the
             // reason takes their rows.
-            if web_page && label != "Status" {
+            if explained && label != "Status" {
                 continue;
             }
             let vx = if vx == 135.0 {
@@ -1468,8 +1579,9 @@ impl Progress {
                 winui::TEXT()
             };
             fit(ui, label, vx, base, &value, vc);
+            spoken(ui, label, base, &value);
         }
-        if web_page {
+        if explained {
             winui::paragraph(
                 p,
                 o.x + 33.0,
@@ -2081,8 +2193,9 @@ fn table_sized(
         bg,
     );
     fill(p, o.x + 19.0, o.y + 275.0, o.x + 527.0, o.y + 298.0, head);
+    winui::header_shade(p, o.x + 19.0, o.x + 527.0, o.y + 298.0, false);
     for x in seps {
-        fill(p, o.x + x, o.y + 275.0, o.x + x, o.y + 298.0, line);
+        winui::header_divider(p, o.x + x, o.y + 275.0, o.y + 298.0, line);
     }
     for (x, h) in heads {
         text(p, o.x + x, o.y + 290.0, crate::i18n::t(h), winui::TEXT());
@@ -2090,18 +2203,8 @@ fn table_sized(
     let visible = shown;
     // Per window: each progress window scrolls its own tables.
     let key = egui::Id::unique(("torrent-table", id, ui.ctx().viewport_id()));
-    let max_first = rows.len().saturating_sub(visible);
-    let mut first = ui
-        .ctx()
-        .data(|d| d.get_temp::<usize>(key))
-        .unwrap_or(0)
-        .min(max_first);
     let body = r(o, 19.0, 299.0, 508.0, body_h);
-    if ui.rect_contains_pointer(body) {
-        let step = winui::wheel_steps(ui, key, body_h / visible as f32, visible as f32);
-        first = first.saturating_add_signed(step).min(max_first);
-        ui.ctx().data_mut(|d| d.insert_temp(key, first));
-    }
+    let first = first_row(ui, key, body, rows.len(), visible);
     let clip = p.with_clip_rect(body);
     let right_of = |c: usize| seps.get(c).map_or(o.x + 520.0, |x| o.x + x - 4.0);
     for (k, row) in rows.iter().skip(first).take(visible + 1).enumerate() {
@@ -2138,24 +2241,71 @@ fn table_sized(
             winui::copyable(ui, rect.intersect(body), (id, first + k, c), cell, cut);
         }
     }
-    // The shared scroll bar (it was a thumb drawn alone, that couldn't be dragged).
-    if rows.len() > visible {
-        let mut pos = first as f32;
-        if crate::scrollbar::bar(
-            ui,
-            key.with("bar"),
-            r(o, 511.0, 275.0, 17.0, body_h + 24.0),
-            true,
-            rows.len() as f32,
-            visible as f32,
-            1.0,
-            &mut pos,
-        ) {
-            let first = (pos.round().max(0.0) as usize).min(max_first);
-            ui.ctx().data_mut(|d| d.insert_temp(key, first));
-        }
-    }
+    let track = r(o, 511.0, 275.0, 17.0, body_h + 24.0);
+    rows_bar(ui, key, track, rows.len(), visible, first);
     clicked
+}
+
+/// The first row a table of `rows` rows showing `visible` at once can start at: the last ones
+/// fill its body (#1101: 16 connections in 6 rows scroll to the 11th, 32 to the 27th).
+fn last_first_row(rows: usize, visible: usize) -> usize {
+    rows.saturating_sub(visible)
+}
+
+/// The first row a table (`key`, the window's own) shows: where it was left, moved by the wheel
+/// over its `body`, never past the last rows. The header stays where it is: only the rows below
+/// it scroll.
+fn first_row(ui: &Ui, key: egui::Id, body: egui::Rect, rows: usize, visible: usize) -> usize {
+    let last = last_first_row(rows, visible);
+    let mut first = ui
+        .ctx()
+        .data(|d| d.get_temp::<usize>(key))
+        .unwrap_or(0)
+        .min(last);
+    if ui.rect_contains_pointer(body) {
+        let step = winui::wheel_steps(ui, key, body.height() / visible as f32, visible as f32);
+        first = first.saturating_add_signed(step).min(last);
+        ui.ctx().data_mut(|d| d.insert_temp(key, first));
+    }
+    first
+}
+
+/// A table's scroll bar over `track` (the main list's, `scrollbar::bar`) when its rows don't
+/// all fit: dragged, clicked or its arrows pressed, it moves the table's first row
+/// ([`first_row`]).
+fn rows_bar(
+    ui: &mut Ui,
+    key: egui::Id,
+    track: egui::Rect,
+    rows: usize,
+    visible: usize,
+    first: usize,
+) {
+    if rows <= visible {
+        return;
+    }
+    let mut pos = first as f32;
+    if crate::scrollbar::bar(
+        ui,
+        key.with("bar"),
+        track,
+        true,
+        rows as f32,
+        visible as f32,
+        1.0,
+        &mut pos,
+    ) {
+        let first = (pos.round().max(0.0) as usize).min(last_first_row(rows, visible));
+        ui.ctx().data_mut(|d| d.insert_temp(key, first));
+    }
+}
+
+/// How much wider than IDM's the connections table's number column is drawn (#1101): its
+/// numbers (`widest`, the widest one's width) have 13 px before the column's line, its title
+/// (`title`'s width) 25 px; the columns after it move over by the rest. 0 when both fit (one
+/// and two digits in the classic look).
+fn number_column_extra(widest: f32, title: f32) -> f32 {
+    (widest - 13.0).max(title - 25.0).max(0.0).ceil().min(60.0)
 }
 
 /// How far the check or the merge after the last byte has come (#736), when it is under way
@@ -2223,6 +2373,49 @@ fn segment_bar(p: &egui::Painter, o: Pos2, item: &Item, segments: &[(u64, f64)])
     }
 }
 
+/// The Pause button's label and kind: a live stream being recorded is stopped and saved (still
+/// `Action::Pause`, the app's `halt` saves it), and while it is saved the button waits.
+pub(crate) fn pause_button(
+    status: Status,
+    live: Option<mdm_tools::video::LiveState>,
+) -> (&'static str, ButtonKind) {
+    use mdm_tools::video::LiveState;
+    match live {
+        // i18n: button in a live stream's progress window: stop recording it and keep what was recorded as a video file
+        Some(LiveState::Recording) => (crate::i18n::mark("Stop and save"), ButtonKind::Normal),
+        Some(LiveState::Saving) => (crate::i18n::mark("Stop and save"), ButtonKind::Disabled),
+        None => match status {
+            // i18n: verb: pause the download
+            Status::Downloading => (crate::i18n::mark("Pause"), ButtonKind::Normal),
+            // i18n: verb: continue the download
+            Status::Stopped | Status::Error => (crate::i18n::mark("Resume"), ButtonKind::Normal),
+            _ => (crate::i18n::mark("Pause"), ButtonKind::Disabled),
+        },
+    }
+}
+
+/// The labels the Pause button can show for one download, its width the widest's: "Stop and
+/// save" only in a live stream's window, so no other's buttons move.
+pub(crate) fn pause_labels(live_stream: bool) -> &'static [&'static str] {
+    if live_stream {
+        &["Pause", "Resume", "Stop and save"]
+    } else {
+        &["Pause", "Resume"]
+    }
+}
+
+/// A live stream's status (yt-dlp says no progress as it records): being saved, or recording;
+/// before what any other download's says ("Receiving data...", "Connecting...").
+fn live_status(live: Option<mdm_tools::video::LiveState>) -> Option<&'static str> {
+    use mdm_tools::video::LiveState;
+    match live? {
+        // i18n: a live stream's status: stopped, and what was recorded being made into the video file kept
+        LiveState::Saving => Some(crate::i18n::t("Saving...")),
+        // i18n: a live stream's status: yt-dlp records it (it shows no progress, only the size so far)
+        LiveState::Recording => Some(crate::i18n::t("Recording...")),
+    }
+}
+
 /// Why yt-dlp downloads a video itself rather than MDM's engine (#769), as one short line.
 fn helper_line(why: &mdm_tools::streams::Helper) -> String {
     use mdm_tools::streams::Helper;
@@ -2247,6 +2440,12 @@ fn helper_line(why: &mdm_tools::streams::Helper) -> String {
     }
 }
 
+/// The connections table's background: the theme's `progress.connections`, or a list's.
+fn connections_bg() -> Color32 {
+    let own = crate::theme::colors().connections;
+    if own.a() > 0 { own } else { winui::FIELD() }
+}
+
 /// The connections table (spec "Connections table"): N. · Downloaded · Info.
 fn connections(ui: &mut Ui, p: &egui::Painter, o: Pos2, snap: Option<&Snapshot>) {
     let outer = r(o, 17.0, 273.0, 513.0, 128.0);
@@ -2257,8 +2456,8 @@ fn connections(ui: &mut Ui, p: &egui::Painter, o: Pos2, snap: Option<&Snapshot>)
         o.y + 274.0,
         o.x + 528.0,
         o.y + 399.0,
-        // Every list's background (IDM's light one is mauve, #beb4be: the only one of its kind).
-        winui::FIELD(),
+        // A list's background, or the theme's own for this table (Luna's greyish mauve).
+        connections_bg(),
     );
     fill(
         p,
@@ -2268,12 +2467,26 @@ fn connections(ui: &mut Ui, p: &egui::Painter, o: Pos2, snap: Option<&Snapshot>)
         o.y + 298.0,
         winui::LIST_HEADER(),
     );
-    for x in [48.0, 148.0, 498.0] {
-        fill(
+    winui::header_shade(p, o.x + 19.0, o.x + 510.0, o.y + 298.0, false);
+    // Listed by connection number, like IDM (the engine reports them in arrival order).
+    let mut conns: Vec<_> = snap
+        .map(|s| s.connections.iter().collect())
+        .unwrap_or_default();
+    conns.sort_by_key(|c| c.id);
+    // i18n: column title: connection number (abbreviation of Number)
+    let number = crate::i18n::t("N.");
+    // The number column is as wide as its widest number and its title (#1101: with 16
+    // connections, 10 to 16 were cut to "..."); the other columns move over.
+    let widest = conns
+        .iter()
+        .map(|c| winui::text_width(p, &(c.id + 1).to_string()))
+        .fold(0.0, f32::max);
+    let dx = number_column_extra(widest, winui::text_width(p, number));
+    for x in [48.0 + dx, 148.0 + dx, 498.0] {
+        winui::header_divider(
             p,
             o.x + x,
             o.y + 275.0,
-            o.x + x,
             o.y + 298.0,
             crate::theme::colors().header_sep,
         );
@@ -2286,50 +2499,35 @@ fn connections(ui: &mut Ui, p: &egui::Painter, o: Pos2, snap: Option<&Snapshot>)
             winui::full_on_hover(ui, rc, ("connections-head", x as i32), label);
         }
     };
-    // i18n: column title: connection number (abbreviation of Number)
-    let number = crate::i18n::t("N.");
     let x = if winui::text_width(p, number) > 21.0 {
         21.0
     } else {
         25.0
     };
-    head(x, 46.0, number);
+    head(x, 46.0 + dx, number);
     // i18n: column title: bytes this connection received
-    head(55.0, 146.0, crate::i18n::t("Downloaded"));
+    head(55.0 + dx, 146.0 + dx, crate::i18n::t("Downloaded"));
     // i18n: column title: what the connection is doing
-    head(155.0, 496.0, crate::i18n::t("Info"));
-    // Listed by connection number, like IDM (the engine reports them in arrival order).
-    let mut conns: Vec<_> = snap
-        .map(|s| s.connections.iter().collect())
-        .unwrap_or_default();
-    conns.sort_by_key(|c| c.id);
+    head(155.0 + dx, 496.0, crate::i18n::t("Info"));
     let key = egui::Id::unique(("conn-scroll", ui.ctx().viewport_id()));
     let visible = 6usize;
-    let max_first = conns.len().saturating_sub(visible);
-    let mut first = ui
-        .ctx()
-        .data(|d| d.get_temp::<usize>(key))
-        .unwrap_or(0)
-        .min(max_first);
     let body = r(o, 19.0, 299.0, 492.0, 100.0);
-    if ui.rect_contains_pointer(body) {
-        let step = winui::wheel_steps(ui, key, 100.0 / visible as f32, visible as f32);
-        first = first.saturating_add_signed(step).min(max_first);
-        ui.ctx().data_mut(|d| d.insert_temp(key, first));
-    }
+    let first = first_row(ui, key, body, conns.len(), visible);
     let clip = p.with_clip_rect(body);
     for (k, c) in conns.iter().skip(first).take(visible + 1).enumerate() {
         let top = o.y + 299.0 + 17.0 * k as f32;
-        winui::text_right(
+        // Its room starts at the list's edge, not 6 px into it as a window's text does.
+        winui::text_right_within(
             &clip,
-            o.x + 33.0,
+            o.x + 33.0 + dx,
             top + 12.0,
             &(c.id + 1).to_string(),
             winui::TEXT(),
+            o.x + 21.0,
         );
         text(
             &clip,
-            o.x + 56.0,
+            o.x + 56.0 + dx,
             top + 12.0,
             &size3(c.downloaded),
             winui::TEXT(),
@@ -2360,7 +2558,7 @@ fn connections(ui: &mut Ui, p: &egui::Painter, o: Pos2, snap: Option<&Snapshot>)
         // The Info column ends at the scrollbar.
         let (rect, cut) = winui::text_fit(
             &clip,
-            o.x + 155.0,
+            o.x + 155.0 + dx,
             top + 12.0,
             &info,
             winui::TEXT(),
@@ -2370,28 +2568,181 @@ fn connections(ui: &mut Ui, p: &egui::Painter, o: Pos2, snap: Option<&Snapshot>)
             winui::full_on_hover(ui, rect.intersect(body), ("conn", c.id), &info);
         }
     }
-    // The shared scroll bar (a track and thumb were drawn here, the thumb not draggable).
-    if conns.len() > visible {
-        let mut pos = first as f32;
-        if crate::scrollbar::bar(
-            ui,
-            key.with("bar"),
-            r(o, 511.0, 275.0, 17.0, 124.0),
-            true,
-            conns.len() as f32,
-            visible as f32,
-            1.0,
-            &mut pos,
-        ) {
-            let first = (pos.round().max(0.0) as usize).min(max_first);
-            ui.ctx().data_mut(|d| d.insert_temp(key, first));
-        }
-    }
+    // The shared scroll bar, the main list's.
+    rows_bar(
+        ui,
+        key,
+        r(o, 511.0, 275.0, 17.0, 124.0),
+        conns.len(),
+        visible,
+        first,
+    );
+}
+
+/// A status row's name for a screen reader: its caption, then its whole value, with every `&`
+/// doubled. [`winui::expose`] reads a single `&` as a keyboard mnemonic and drops it — right for a
+/// button's own label, and wrong here, where the row draws its caption and its value as they are:
+/// an address with a query string (`?seed=1406&rate=24K`) has to be read whole, and a file name
+/// with one too (#1406, the review's fix: `expose` turns `&&` back into one `&`).
+fn spoken_name(caption: &str, value: &str) -> String {
+    let name = if value.is_empty() {
+        caption.to_owned()
+    } else {
+        format!("{caption}: {value}")
+    };
+    name.replace('&', "&&")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The name a row is said with: caption, then value, and the value's own `&` doubled so that
+    /// `winui::expose` (which reads `&&` as one `&`) says the address whole.
+    #[test]
+    fn a_row_with_a_query_string_is_said_whole() {
+        assert_eq!(
+            spoken_name(
+                "Address",
+                "http://127.0.0.1:8099/gen/2G/a.bin?seed=1406&rate=24K&Expires=7"
+            ),
+            "Address: http://127.0.0.1:8099/gen/2G/a.bin?seed=1406&&rate=24K&&Expires=7"
+        );
+        // A file name with one, in any row's value (and the caption as it is drawn: no `&` there).
+        assert_eq!(
+            spoken_name("File size", "2.000 GB & more"),
+            "File size: 2.000 GB && more"
+        );
+    }
+
+    #[test]
+    fn a_row_without_a_value_is_its_caption_alone() {
+        assert_eq!(spoken_name("Time left", ""), "Time left");
+    }
+
+    /// A live stream being recorded: its Pause button stops and saves it; while it is saved
+    /// the button waits; every other download's is Pause or Resume as before. Only a live
+    /// stream's window lays the button out for "Stop and save".
+    #[test]
+    fn a_recording_live_streams_pause_button_stops_and_saves_it() {
+        use mdm_tools::video::LiveState;
+        let label = |status, live| pause_button(status, live).0;
+        let enabled = |status, live| pause_button(status, live).1 != ButtonKind::Disabled;
+        let recording = Some(LiveState::Recording);
+        let saving = Some(LiveState::Saving);
+        assert_eq!(label(Status::Downloading, recording), "Stop and save");
+        assert!(enabled(Status::Downloading, recording));
+        assert_eq!(label(Status::Downloading, saving), "Stop and save");
+        assert!(!enabled(Status::Downloading, saving));
+        assert_eq!(label(Status::Downloading, None), "Pause");
+        assert!(enabled(Status::Downloading, None));
+        for status in [Status::Stopped, Status::Error] {
+            assert_eq!(label(status, None), "Resume");
+            assert!(enabled(status, None));
+        }
+        for status in [Status::Queued, Status::Complete] {
+            assert_eq!(label(status, None), "Pause");
+            assert!(!enabled(status, None));
+        }
+        for status in [
+            Status::Downloading,
+            Status::Stopped,
+            Status::Error,
+            Status::Queued,
+        ] {
+            for live in [None, recording, saving] {
+                assert!(pause_labels(true).contains(&label(status, live)));
+            }
+            assert!(pause_labels(false).contains(&label(status, None)));
+        }
+        assert!(!pause_labels(false).contains(&"Stop and save"));
+    }
+
+    /// A live stream's status says it is saved, else that it records, before anything else
+    /// would ("Receiving data...", "Connecting..."); any other download has none of its own.
+    #[test]
+    fn a_live_stream_says_it_is_saved_or_recorded_first() {
+        use mdm_tools::video::LiveState;
+        assert_eq!(live_status(Some(LiveState::Saving)), Some("Saving..."));
+        assert_eq!(
+            live_status(Some(LiveState::Recording)),
+            Some("Recording...")
+        );
+        assert_eq!(live_status(None), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn reopening_after_completion_ignores_the_previous_windows_frame_cache() {
+        let ctx = egui::Context::default();
+        let key = egui::Id::unique(("progress-pos", 7_u64));
+        let want: Framed = ([548.0, 472.0], 1000, None);
+        ctx.data_mut(|d| d.insert_temp(key.with("framed"), want.clone()));
+        let reopened = Progress::new(7, false);
+        assert!(
+            reopened.needs_frame(&ctx, key, &want),
+            "an equal cached size is not evidence that this new window has a frame or HWND"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn taskbar_follows_only_a_running_download_with_a_known_size() {
+        let mut item = Item::new(
+            7,
+            "https://example.com/a".parse().unwrap(),
+            std::path::PathBuf::from("a"),
+            crate::model::Category::General,
+        );
+        item.size = Some(100);
+        item.downloaded = 25;
+        item.status = Status::Downloading;
+        assert_eq!(taskbar_fraction(&item), Some(0.25));
+        for status in [
+            Status::Queued,
+            Status::Stopped,
+            Status::Error,
+            Status::Complete,
+        ] {
+            item.status = status;
+            assert_eq!(taskbar_fraction(&item), None, "{status:?}");
+        }
+        item.status = Status::Downloading;
+        item.size = None;
+        assert_eq!(taskbar_fraction(&item), None);
+        item.size = Some(0);
+        assert_eq!(taskbar_fraction(&item), None);
+        item.size = Some(100);
+        assert_eq!(taskbar_fraction(&item), Some(0.25), "resumed");
+    }
+
+    /// #1101: 16 or 32 connections in the table's 6 rows scroll as far as their last; fewer
+    /// than fit don't scroll.
+    #[test]
+    fn a_table_scrolls_to_its_last_rows() {
+        assert_eq!(last_first_row(1, 6), 0);
+        assert_eq!(last_first_row(6, 6), 0);
+        assert_eq!(last_first_row(8, 6), 2);
+        assert_eq!(last_first_row(16, 6), 10);
+        assert_eq!(last_first_row(32, 6), 26);
+        assert_eq!(last_first_row(0, 6), 0);
+    }
+
+    /// #1101: the number column keeps IDM's width while its numbers and title fit (one or two
+    /// digits, 6 px each in the classic look), and widens by what a wider one needs.
+    #[test]
+    fn the_number_column_fits_its_widest_number() {
+        assert_eq!(number_column_extra(6.0, 11.0), 0.0, "1 to 9, \"N.\"");
+        assert_eq!(number_column_extra(12.0, 11.0), 0.0, "10 to 99");
+        assert_eq!(number_column_extra(18.0, 11.0), 5.0, "100 to 128");
+        assert_eq!(number_column_extra(14.5, 11.0), 2.0, "wider digits");
+        assert_eq!(number_column_extra(6.0, 31.0), 6.0, "a longer title");
+        assert_eq!(
+            number_column_extra(500.0, 11.0),
+            60.0,
+            "never past the Info column"
+        );
+    }
 
     /// A download of unknown size has no percentage in its title (from #384).
     #[test]

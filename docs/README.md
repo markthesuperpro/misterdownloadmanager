@@ -34,7 +34,7 @@ These pages explain each part of the program. The tutorials walk through the thi
 - **[Image galleries](galleries.md)** — download a gallery's pictures (Wikimedia Commons, Flickr, DeviantArt and many more) with gallery-dl.
 - **[Torrents](torrents.md)** — magnet links and .torrent files, choosing files, and sharing.
 - **[Torrents and your security](torrent-security.md)** — what others can see, the network switches, blocklists, proxies.
-- **[Debrid service accounts](debrid.md)** — Real-Debrid, AllDebrid, Premiumize and TorBox: file-host links through your own account.
+- **[Debrid service accounts](debrid.md)** — Real-Debrid, AllDebrid, Premiumize, TorBox and Mega-Debrid: file-host links through your own account.
 
 ## Settings
 
@@ -63,6 +63,7 @@ These pages explain each part of the program. The tutorials walk through the thi
 - **[Troubleshooting](troubleshooting.md)** — what to check when a download fails, the browser doesn't hand over a download, or a schedule doesn't start.
 - **[The browser and MDM aren't connected](browser-help.md)** — what the extension's red **!** means, reason by reason, and how to fix each.
 - **[Releases](https://github.com/anefzaoui/misterdownloadmanager/releases)** — download the latest version.
+- **[Rate MDM](https://misterdownloadmanager.com/#rate)** — one to five stars on the website's home or download page; pick again to change your rating, or remove it.
 - **[Report a problem](https://github.com/anefzaoui/misterdownloadmanager/issues/new/choose)** — or use **Help → Report a problem** in MDM, which fills in your version, system and how MDM was installed for you.
 
 ---

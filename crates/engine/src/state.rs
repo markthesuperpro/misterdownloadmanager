@@ -43,6 +43,10 @@ pub struct ResumeState {
     /// browser's User-Agent (#372): a resume asks the same way.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub asked_as_mdm: bool,
+    /// Only MDM's own name (`Options::own_agent`) got past the site's bot check (#1422): a
+    /// resume asks under it too.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub asked_as_own: bool,
     /// A POST download (`Options::post`, its body not stored) whose redirects turned it into
     /// a GET (301, 302, 303): `final_url` is asked with GET.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -67,6 +71,7 @@ impl ResumeState {
             content_type: None,
             checksum: None,
             asked_as_mdm: false,
+            asked_as_own: false,
             final_get: false,
             browser_like: false,
         }
@@ -112,7 +117,12 @@ impl ResumeState {
 
     /// Bytes already on disk.
     pub fn downloaded(&self) -> u64 {
-        self.segments.iter().map(|s| s.cursor - s.start).sum()
+        // A damaged state may hold a cursor before its segment's start (the planner refuses
+        // it): nothing of that segment is on disk, and the count must not wrap or panic first.
+        self.segments
+            .iter()
+            .map(|s| s.cursor.saturating_sub(s.start))
+            .sum()
     }
 }
 
@@ -125,6 +135,16 @@ pub struct Validators {
     pub etag_host: Option<String>,
     /// Last-Modified, kept only when it is a strong validator (`Date` at least 1 s later).
     pub last_modified: Option<String>,
+    /// The whole file's digests the server sends with every answer, whatever its range
+    /// (`x-oss-hash-crc64ecma: …`, as `name=value`, `download::digests_of`): the same on every
+    /// copy of the file, another for another file.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub digests: Vec<String>,
+    /// The copies behind the address differ in ETag and date but not in their digests (one file
+    /// on several origins behind one CDN, #1577): ranges are asked without `If-Range`, which
+    /// another copy answers with the whole file, and each answer must carry the same digest.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub by_digest: bool,
 }
 
 impl Validators {
@@ -149,7 +169,25 @@ impl Validators {
             etag_host: etag.as_ref().and(host.map(str::to_owned)),
             etag,
             last_modified,
+            ..Validators::default()
         }
+    }
+
+    /// Whether an answer carrying `theirs` (its digests, `name=value`) is this file: Some(true)
+    /// when they share a digest and none of the same name differs, Some(false) when one
+    /// differs, None when there is nothing to compare.
+    pub fn same_digest(&self, theirs: &[String]) -> Option<bool> {
+        let name = |d: &str| d.split_once('=').map_or("", |(n, _)| n).to_owned();
+        let mut same = None;
+        for ours in &self.digests {
+            for t in theirs.iter().filter(|t| name(t) == name(ours)) {
+                if t != ours {
+                    return Some(false);
+                }
+                same = Some(true);
+            }
+        }
+        same
     }
 
     /// The `If-Range` value for a request to `host`: the ETag only to the host that issued it,
@@ -167,7 +205,7 @@ impl Validators {
             Validators {
                 etag: Some(v.to_owned()),
                 etag_host: host.map(str::to_owned),
-                last_modified: None,
+                ..Validators::default()
             }
         } else {
             Validators {
@@ -248,6 +286,45 @@ mod migrate_tests {
 mod tests {
     use super::*;
 
+    /// #1577: an answer is this file by its digests when they share one and none of the same
+    /// name differs; another value of the same digest is another file.
+    #[test]
+    fn same_digest_needs_one_in_common_and_none_different() {
+        let v = Validators {
+            digests: vec!["x-oss-hash-crc64ecma=1".into(), "x-linked-etag=ab".into()],
+            ..Validators::default()
+        };
+        let d = |list: &[&str]| list.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        assert_eq!(v.same_digest(&d(&["x-oss-hash-crc64ecma=1"])), Some(true));
+        assert_eq!(
+            v.same_digest(&d(&["x-oss-hash-crc64ecma=1", "x-linked-etag=cd"])),
+            Some(false)
+        );
+        assert_eq!(v.same_digest(&d(&["x-oss-hash-crc64ecma=2"])), Some(false));
+        assert_eq!(v.same_digest(&d(&["x-goog-hash:md5=1"])), None);
+        assert_eq!(v.same_digest(&[]), None);
+        assert_eq!(
+            Validators::default().same_digest(&d(&["x-linked-etag=ab"])),
+            None
+        );
+    }
+
+    /// A state saved before digests (or without one) reads as before, and one saved with them
+    /// keeps them.
+    #[test]
+    fn digests_are_kept_in_the_state() {
+        let old: Validators = serde_json::from_str(r#"{"etag":"\"a\"","etag_host":"h"}"#).unwrap();
+        assert!(old.digests.is_empty() && !old.by_digest);
+        let v = Validators {
+            digests: vec!["x-oss-hash-crc64ecma=1".into()],
+            by_digest: true,
+            ..Validators::default()
+        };
+        let json = serde_json::to_string(&v).unwrap();
+        assert_eq!(serde_json::from_str::<Validators>(&json).unwrap(), v);
+        assert!(!serde_json::to_string(&old).unwrap().contains("digest"));
+    }
+
     #[test]
     fn save_load_round_trip() {
         let dir = tempfile::tempdir().unwrap();
@@ -321,5 +398,29 @@ mod tests {
         assert!(ResumeState::load(&p).is_err());
         std::fs::write(&p, br#"{"version":99}"#).unwrap();
         assert!(ResumeState::load(&p).is_err());
+    }
+
+    /// A damaged state whose segment ends before it starts (the planner refuses it) is counted
+    /// as no bytes: the count is made before that check, and must neither panic nor wrap.
+    #[test]
+    fn a_segment_that_goes_backwards_holds_no_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("a.bin.mdm.json");
+        std::fs::write(
+            &p,
+            br#"{"version":1,"url":"http://x/a","final_url":"http://x/a","dest":"a.bin",
+                 "size":100,"segments":[{"start":60,"cursor":10,"end":100}]}"#,
+        )
+        .unwrap();
+        let s = ResumeState::load(&p).unwrap();
+        assert_eq!(
+            s.downloaded(),
+            0,
+            "nothing before a segment's start is on disk"
+        );
+        assert!(
+            crate::planner::Planner::resume(s.size, 1, &s.segments).is_err(),
+            "the state is refused, not counted as progress"
+        );
     }
 }

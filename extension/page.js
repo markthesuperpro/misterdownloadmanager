@@ -1,6 +1,13 @@
 // Mister Download Manager's link watcher (a content script, in every page and frame):
-//  - a link clicked with Alt held is the browser's to download (background.js leaves its download
-//    alone), the key the app's help names for it;
+//  - a link clicked with Alt held (Option on a Mac) is the browser's to download (background.js
+//    leaves its download alone), the key the app's help names for it. The background hears of
+//    it as the button goes down, before the browser can start a download. The link is then
+//    followed as a plain click follows it, once the background knows, in every browser (#332,
+//    #1494): the browser's own Alt+click is stopped. Chromium and Safari would save the link
+//    without opening it ("download link"), which saves a bot check's page ("Just a moment...")
+//    instead of letting its script run; followed, the check runs in the tab and the download
+//    that comes after it stays the browser's. Firefox does nothing with that click (it saves
+//    the link only with browser.altClickSave set, off by default);
 //  - Safari only: it has no downloads API, so background.js can't take a download from the
 //    browser. The click on a link to a file type Options lists is held here instead and offered
 //    to the app (message `link`); if the app doesn't take it, the click goes on as if never held.
@@ -24,7 +31,10 @@
   // ---- Safari: the file types to hold links for (Options, as background.js keeps them) --------
 
   let patterns = [];
+  // The app's Torrent settings leave .torrent files to the browser (#1058).
+  let noTorrents = false;
   const learn = (rules) => {
+    noTorrents = Boolean(rules && rules.torrents === false);
     // As background.js typePatterns reads the list: names separated by spaces, `*` any run.
     patterns =
       rules && rules.capture
@@ -79,10 +89,39 @@
     });
   };
 
-  const note = (e) => {
-    if (!e.isTrusted || !(e.target instanceof Element)) return;
+  // The web link a person's click (or press) is on, else null.
+  const linkOf = (e) => {
+    if (!e.isTrusted || !(e.target instanceof Element)) return null;
     const a = e.target.closest("a[href]");
-    if (!a || !/^https?:/i.test(a.href)) return;
+    return a && /^https?:/i.test(a.href) ? a : null;
+  };
+
+  // Alt held as the button goes down on a link: said before the click starts any download.
+  const press = (e) => {
+    if (!e.altKey || e.button > 1) return;
+    const a = linkOf(e);
+    if (a) tell({ type: "bypass", url: a.href });
+  };
+
+  // An Alt+click on a link the page left alone (no script of its own took it) is followed as a
+  // plain click once the background has it; the browser's own handling of it (Chromium's and
+  // Safari's save of the link, Firefox's nothing, or its save with browser.altClickSave) is
+  // stopped, so it happens once. Alt with Ctrl, Cmd or Shift (a new tab or window), the middle
+  // button: the browser's own, as they are. A `download` link is followed as such (the browser
+  // downloads it, under its name).
+  const follow = (e) => {
+    if (!e.altKey || e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    if (e.defaultPrevented) return;
+    const a = linkOf(e);
+    if (!a) return;
+    e.preventDefault();
+    // Not trusted: `note` and `follow` leave this click alone.
+    tell({ type: "bypass", url: a.href }).then(() => a.click());
+  };
+
+  const note = (e) => {
+    const a = linkOf(e);
+    if (!a) return;
     if (e.altKey) {
       tell({ type: "bypass", url: a.href });
       return;
@@ -90,16 +129,22 @@
     // Safari: a plain click (or Cmd/Shift: a link opened elsewhere is held the same).
     if (SAFARI && e.type === "click" && e.button === 0 && patterns.length) {
       const type = typeOf(a);
-      if (type && patterns.some((p) => p.test(type))) hold(e, a);
+      if (type && !(noTorrents && /^torrent$/i.test(type)) && patterns.some((p) => p.test(type))) hold(e, a);
     }
   };
+  addEventListener("pointerdown", press, true);
   addEventListener("click", note, true);
   addEventListener("auxclick", note, true);
+  // After the page's own listeners on the link and its document: a click bubbles to the window
+  // last.
+  addEventListener("click", follow, false);
   globalThis.__mdmPage = {
     alive: () => Boolean(ext.runtime?.id),
     stop: () => {
+      removeEventListener("pointerdown", press, true);
       removeEventListener("click", note, true);
       removeEventListener("auxclick", note, true);
+      removeEventListener("click", follow, false);
       if (SAFARI) ext.storage.onChanged.removeListener(onStorage);
     },
   };

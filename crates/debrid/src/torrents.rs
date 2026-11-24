@@ -5,7 +5,7 @@
 //!
 //! Each service from its public API documentation (read 2026-11-06):
 //! - Real-Debrid: `torrents/addMagnet`, `torrents/info/{id}`, `torrents/selectFiles/{id}`
-//!   (`files=all`), `torrents/delete/{id}`; the finished torrent's `links` are its own hoster
+//!   (`files=all`, or the ids of the files ticked in Add torrent), `torrents/delete/{id}`; the finished torrent's `links` are its own hoster
 //!   links, unrestricted as any (`unrestrict/link`).
 //! - AllDebrid: `v4/magnet/upload` (`magnets[]`), `v4.1/magnet/status` (`statusCode` 0–3 working,
 //!   4 ready, 5 and up failed), `v4/magnet/files` (`id[]`, a tree of `n`/`s`/`l`/`e`),
@@ -15,6 +15,7 @@
 //!   the user's own cloud.
 //! - TorBox: `torrents/createtorrent` (`magnet`), `torrents/mylist?id=`, `torrents/requestdl` for
 //!   each file (a direct link), `torrents/controltorrent` (`delete`).
+//! - Mega-Debrid: not yet (`ServiceKind::takes_magnets`).
 
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -67,13 +68,15 @@ impl Session {
                 t.await
             }
             ServiceKind::AllDebrid => {
-                alldebrid::add_magnet(&self.http, &self.token(false).await?, magnet).await
+                alldebrid::add_magnet(&self.http, &self.token(None).await?, magnet).await
             }
+            // Never asked: `torrent_account` skips it.
+            ServiceKind::MegaDebrid => Err(Fault::Unsupported),
             ServiceKind::Premiumize => {
-                premiumize::create(&self.http, &self.token(false).await?, magnet).await
+                premiumize::create(&self.http, &self.token(None).await?, magnet).await
             }
             ServiceKind::TorBox => {
-                let key = self.token(false).await?;
+                let key = self.token(None).await?;
                 let id = torbox::create(&self.http, &key, torbox::Kind::Torrent, "magnet", magnet)
                     .await?;
                 Ok(id.to_string())
@@ -81,23 +84,26 @@ impl Session {
         }
     }
 
-    async fn torrent_status(&self, id: &str) -> Result<Status, Fault> {
+    /// `chosen`: the files ticked in Add torrent (Real-Debrid fetches only those).
+    async fn torrent_status(&self, id: &str, chosen: Option<&[String]>) -> Result<Status, Fault> {
         match self.account.service {
             ServiceKind::RealDebrid => {
-                self.with_token(
-                    |t| async move { realdebrid::torrent_status(&self.http, &t, id).await },
-                )
+                self.with_token(|t| async move {
+                    realdebrid::torrent_status(&self.http, &t, id, chosen).await
+                })
                 .await
             }
             ServiceKind::AllDebrid => {
-                alldebrid::magnet_status(&self.http, &self.token(false).await?, id).await
+                alldebrid::magnet_status(&self.http, &self.token(None).await?, id).await
             }
+            // Never asked: `torrent_account` skips it.
+            ServiceKind::MegaDebrid => Err(Fault::Unsupported),
             ServiceKind::Premiumize => {
-                premiumize::transfer_status(&self.http, &self.token(false).await?, id).await
+                premiumize::transfer_status(&self.http, &self.token(None).await?, id).await
             }
             ServiceKind::TorBox => {
                 let (kind, n) = (torbox::Kind::Torrent, torbox::torrent_id(id)?);
-                let key = self.token(false).await?;
+                let key = self.token(None).await?;
                 let i = torbox::item(&self.http, &key, kind, n).await?;
                 match torbox::state(&i) {
                     Some(s) => Ok(s),
@@ -119,16 +125,18 @@ impl Session {
                 .await
             }
             ServiceKind::AllDebrid => {
-                alldebrid::magnet_delete(&self.http, &self.token(false).await?, id).await
+                alldebrid::magnet_delete(&self.http, &self.token(None).await?, id).await
             }
+            // Never asked: `torrent_account` skips it.
+            ServiceKind::MegaDebrid => Err(Fault::Unsupported),
             ServiceKind::Premiumize => {
-                premiumize::transfer_delete(&self.http, &self.token(false).await?, id).await
+                premiumize::transfer_delete(&self.http, &self.token(None).await?, id).await
             }
             ServiceKind::TorBox => {
                 let n = torbox::torrent_id(id)?;
                 torbox::delete(
                     &self.http,
-                    &self.token(false).await?,
+                    &self.token(None).await?,
                     torbox::Kind::Torrent,
                     n,
                 )
@@ -139,12 +147,13 @@ impl Session {
 }
 
 impl Debrid {
-    /// The account torrents go to: the first one (every service takes magnets).
+    /// The account torrents go to: the first one whose service takes magnets.
     pub fn torrent_account(&self) -> Option<(u64, ServiceKind)> {
         self.sessions
             .read()
             .unwrap()
-            .first()
+            .iter()
+            .find(|s| s.account.service.takes_magnets())
             .map(|s| (s.account.id, s.account.service))
     }
 
@@ -194,6 +203,13 @@ pub struct Order {
     pub transfer: Option<String>,
     /// Its folder: the files go under it, in their paths.
     pub folder: PathBuf,
+    /// Custom file or folder name chosen in Add torrent (#517), when renamed from the torrent's own.
+    pub renamed: Option<String>,
+    /// The files ticked in Add torrent, by their path in the torrent (`/`-separated, relative to
+    /// its name, as `.torrent` files list them; never a padding file). None: all of them. Matched
+    /// to the service's list by path (`chosen`), never by index: each service numbers files its
+    /// own way.
+    pub files: Option<Vec<String>>,
     /// The downloads' options (connections, proxy, DNS, adapter, speed limit); the unlocker is
     /// set here.
     pub net: mdm_engine::Options,
@@ -302,7 +318,7 @@ impl RemoteTorrent {
         // percentage (by tens) changes.
         let mut said = String::new();
         let (name, files) = loop {
-            match s.torrent_status(&id).await? {
+            match s.torrent_status(&id, order.files.as_deref()).await? {
                 Status::Ready { name, files } => break (name, files),
                 Status::Failed(f) => return Err(Fault::Service(f)),
                 Status::Working { progress, what } => {
@@ -326,10 +342,36 @@ impl RemoteTorrent {
             }
         };
         self.shared.lock().unwrap().working = None;
-        self.note(format!(
-            "{service} has the torrent: {} file(s), downloading them",
-            files.len()
-        ));
+        // Several files in the torrent: also when only one of them was ticked (it keeps its
+        // place in the torrent's folder, as when downloaded from peers).
+        let multi = files.len() > 1 || order.files.is_some();
+        let files = match &order.files {
+            // Real-Debrid was asked for those only (`selectFiles`): its list is theirs.
+            Some(_) if s.account.service == ServiceKind::RealDebrid => {
+                self.note(format!(
+                    "{service} has the {} file(s) chosen in Add torrent, downloading them",
+                    files.len()
+                ));
+                files
+            }
+            Some(wanted) => {
+                let all = files.len();
+                let files = chosen(files, &name, wanted)
+                    .map_err(|p| Fault::Service(ServiceFault::ChosenFileMissing(p)))?;
+                self.note(format!(
+                    "{service} has the torrent: {all} file(s), downloading the {} chosen in Add torrent",
+                    files.len()
+                ));
+                files
+            }
+            None => {
+                self.note(format!(
+                    "{service} has the torrent: {} file(s), downloading them",
+                    files.len()
+                ));
+                files
+            }
+        };
         let total: u64 = files.iter().map(|f| f.size).sum();
         self.shared.lock().unwrap().total = (total > 0).then_some(total);
         // Real-Debrid's and AllDebrid's links are their hoster links: unlocked through the
@@ -341,28 +383,30 @@ impl RemoteTorrent {
         };
         // As torrent programs do: one file goes into the folder itself, several into a folder
         // named after the torrent (a path that already starts with that name isn't doubled).
-        let folder = if files.len() == 1 {
+        let folder = if !multi {
             order.folder.clone()
         } else {
-            order
-                .folder
-                .join(safe_path(&name).unwrap_or_else(|| PathBuf::from("torrent")))
+            let folder_name = order
+                .renamed
+                .as_deref()
+                .and_then(safe_path)
+                .or_else(|| safe_path(&name))
+                .unwrap_or_else(|| PathBuf::from("torrent"));
+            order.folder.join(folder_name)
         };
         let within = |path: &str| {
             let t = path.trim_start_matches(['/', '\\']);
             // The one file by its name, whatever folder the service keeps it in (TorBox's
             // `<torrent>/<file>`).
-            if files.len() == 1 {
+            if !multi {
                 return t.rsplit(['/', '\\']).next().unwrap_or(t).to_owned();
             }
             match t.split_once(['/', '\\']) {
-                Some((first, rest)) if files.len() > 1 && first.trim() == name.trim() => {
-                    rest.to_owned()
-                }
+                Some((first, rest)) if first.trim() == name.trim() => rest.to_owned(),
                 _ => t.to_owned(),
             }
         };
-        if files.len() > 1
+        if multi
             && order.transfer.is_none()
             && std::fs::read_dir(&folder).is_ok_and(|mut rd| rd.next().is_some())
         {
@@ -376,7 +420,16 @@ impl RemoteTorrent {
                     "the service gave a link MDM can't read".into(),
                 ))
             })?;
-            let dest = match safe_path(&within(&f.path)) {
+            let chosen_rel = if !multi {
+                order
+                    .renamed
+                    .as_deref()
+                    .and_then(safe_path)
+                    .or_else(|| safe_path(&within(&f.path)))
+            } else {
+                safe_path(&within(&f.path))
+            };
+            let dest = match chosen_rel {
                 Some(rel) => {
                     let path = folder.join(rel);
                     if let Some(dir) = path.parent() {
@@ -389,14 +442,22 @@ impl RemoteTorrent {
                 None if f.path.trim().is_empty() => PathBuf::new(),
                 None => return Err(Fault::Service(ServiceFault::UnsafeName(f.path.clone()))),
             };
+            // Done in an earlier run: there, whole (no resume state beside it), and of the
+            // service's size when the service gives one. Another file of that name (another
+            // site's download, an earlier attempt whose state is gone) stays as it is: this one
+            // downloads beside it, under the engine's next numbered name.
             if !dest.as_os_str().is_empty()
                 && dest.is_file()
                 && !mdm_engine::state::state_path(&dest).exists()
+                && (f.size == 0 || std::fs::metadata(&dest).is_ok_and(|m| m.len() == f.size))
             {
-                // Done in an earlier run.
                 let mut sh = self.shared.lock().unwrap();
                 sh.done += f.size;
-                sh.saved_files.push(dest);
+                sh.saved_files.push(dest.clone());
+                // One file: the download is that file, as when it comes down below.
+                if !multi {
+                    sh.folder = Some(dest);
+                }
                 continue;
             }
             let opts = mdm_engine::Options {
@@ -453,7 +514,7 @@ impl RemoteTorrent {
             sh.done += out.size;
             sh.saved_files.push(out.path.clone());
             // One file: the download is that file.
-            if files.len() == 1 {
+            if !multi {
                 sh.folder = Some(out.path);
             }
         }
@@ -467,7 +528,7 @@ impl RemoteTorrent {
             )),
         }
         let mut sh = self.shared.lock().unwrap();
-        if files.len() != 1 || sh.folder.is_none() {
+        if multi || sh.folder.is_none() {
             sh.folder = Some(folder);
         }
         Ok(())
@@ -512,6 +573,16 @@ impl RemoteTorrent {
         if let Some(d) = &self.shared.lock().unwrap().current {
             d.set_speed_limit(rate);
         }
+    }
+
+    /// The speed limit of the file downloading now (None: none, or no file yet).
+    pub fn speed_limit(&self) -> Option<u64> {
+        self.shared
+            .lock()
+            .unwrap()
+            .current
+            .as_ref()
+            .and_then(Download::speed_limit)
     }
 
     /// As one download: the service's work first (no bytes yet), then its files' bytes in all.
@@ -576,8 +647,46 @@ impl RemoteTorrent {
             server,
             at_service,
             finishing: None,
+            kept: None,
         }
     }
+}
+
+/// A path's parts (`/` or `\`), empty ones dropped.
+fn parts(path: &str) -> Vec<&str> {
+    path.split(['/', '\\'])
+        .map(str::trim)
+        .filter(|p| !p.is_empty() && *p != ".")
+        .collect()
+}
+
+/// Whether the service's `path` is the torrent's `wanted` one: the same parts, or the same under
+/// the torrent's `name` (the services keep a torrent's files in a folder of its name; the
+/// torrent's own paths are relative to it).
+pub(crate) fn same_file(path: &str, name: &str, wanted: &str) -> bool {
+    let (have, want) = (parts(path), parts(wanted));
+    !want.is_empty()
+        && (have == want
+            || (have.len() == want.len() + 1 && have[0] == name.trim() && have[1..] == want[..]))
+}
+
+/// The service's files ticked in Add torrent, matched by path. Err: a ticked path the service's
+/// list doesn't hold (then nothing is picked, rather than every file).
+pub(crate) fn chosen(
+    files: Vec<RemoteFile>,
+    name: &str,
+    wanted: &[String],
+) -> Result<Vec<RemoteFile>, String> {
+    if let Some(w) = wanted
+        .iter()
+        .find(|w| !files.iter().any(|f| same_file(&f.path, name, w)))
+    {
+        return Err(w.clone());
+    }
+    Ok(files
+        .into_iter()
+        .filter(|f| wanted.iter().any(|w| same_file(&f.path, name, w)))
+        .collect())
 }
 
 fn request(link: &Url, dest: &Path, folder: &Path) -> mdm_engine::Request {
@@ -612,11 +721,37 @@ pub(crate) struct RdInfo {
 #[derive(Debug, Deserialize)]
 pub(crate) struct RdFile {
     #[serde(default)]
+    pub id: u64,
+    #[serde(default)]
     pub path: String,
     #[serde(default)]
     pub bytes: u64,
     #[serde(default)]
     pub selected: i64,
+}
+
+/// Real-Debrid's `selectFiles` value for the files ticked in Add torrent: `all`, or their ids,
+/// comma-separated (matched by path). Err: a ticked path it doesn't list.
+pub(crate) fn rd_selection(i: &RdInfo, wanted: Option<&[String]>) -> Result<String, String> {
+    let Some(wanted) = wanted else {
+        return Ok("all".into());
+    };
+    let mut ids = Vec::new();
+    for w in wanted {
+        let found: Vec<u64> = i
+            .files
+            .iter()
+            .filter(|f| same_file(&f.path, &i.filename, w))
+            .map(|f| f.id)
+            .collect();
+        if found.is_empty() {
+            return Err(w.clone());
+        }
+        ids.extend(found);
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    Ok(ids.iter().map(u64::to_string).collect::<Vec<_>>().join(","))
 }
 
 /// What Real-Debrid's answer means. `waiting_files_selection` is answered by the caller.
@@ -787,6 +922,54 @@ mod tests {
         assert!(
             p.components().all(|c| matches!(c, Component::Normal(_))),
             "{p:?}"
+        );
+    }
+
+    #[test]
+    fn the_ticked_files_are_matched_by_path_under_the_torrents_name_or_not() {
+        // The torrent's own paths are relative to its name; the services' with it or without it.
+        assert!(same_file("/Show/S01/e1.mkv", "Show", "S01/e1.mkv"));
+        assert!(same_file("Show/S01/e1.mkv", "Show", "S01/e1.mkv"));
+        assert!(same_file("S01/e1.mkv", "Show", "S01/e1.mkv"));
+        assert!(same_file("S01\\e1.mkv", "Show", "S01/e1.mkv"));
+        assert!(!same_file("Show/S01/e2.mkv", "Show", "S01/e1.mkv"));
+        assert!(!same_file("Other/S01/e1.mkv", "Show", "S01/e1.mkv"));
+        assert!(!same_file("Show/S01/e1.mkv", "Show", ""));
+        // A folder of the torrent's name inside it isn't taken for the torrent's.
+        assert!(same_file("Show/Show/x.txt", "Show", "Show/x.txt"));
+        let file = |p: &str| RemoteFile {
+            path: p.into(),
+            size: 1,
+            link: format!("https://x.test/{p}"),
+        };
+        let files = vec![file("Show/a.mkv"), file("Show/b/c.srt"), file("Show/d.nfo")];
+        let picked = chosen(files.clone(), "Show", &["b/c.srt".into(), "a.mkv".into()]).unwrap();
+        assert_eq!(
+            picked.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(),
+            vec!["Show/a.mkv", "Show/b/c.srt"]
+        );
+        assert_eq!(
+            chosen(files, "Show", &["a.mkv".into(), "gone.mkv".into()]),
+            Err("gone.mkv".into())
+        );
+    }
+
+    #[test]
+    fn real_debrid_is_sent_the_ticked_files_ids() {
+        let info: RdInfo = serde_json::from_str(
+            r#"{"filename":"Show","status":"waiting_files_selection","files":[
+            {"id":1,"path":"/a.mkv","bytes":2,"selected":0},{"id":2,"path":"/x.nfo","bytes":1,"selected":0},
+            {"id":7,"path":"/sub/b.srt","bytes":1,"selected":0}]}"#,
+        )
+        .unwrap();
+        assert_eq!(rd_selection(&info, None), Ok("all".into()));
+        assert_eq!(
+            rd_selection(&info, Some(&["sub/b.srt".into(), "a.mkv".into()])),
+            Ok("1,7".into())
+        );
+        assert_eq!(
+            rd_selection(&info, Some(&["a.mkv".into(), "nope".into()])),
+            Err("nope".into())
         );
     }
 
