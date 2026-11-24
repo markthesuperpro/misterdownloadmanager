@@ -1,0 +1,54 @@
+
+name: Refresh Orphan Branch
+
+on:
+  schedule:
+    - cron: "13 17 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: orphan-branch-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - name: Checkout orphan branch
+        uses: actions/checkout@v7
+        with:
+          ref: YOUR_ORPHAN_BRANCH
+          fetch-depth: 1
+
+      - name: Amend and push when 50 days have elapsed
+        env:
+          TARGET_BRANCH: YOUR_ORPHAN_BRANCH
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git check-ref-format --branch "$TARGET_BRANCH" >/dev/null
+
+          OLD_SHA="$(git rev-parse HEAD)"
+          LAST_COMMIT="$(git show -s --format=%ct HEAD)"
+          NOW="$(date -u +%s)"
+
+          INTERVAL=$((50 * 24 * 60 * 60))
+
+          if (( NOW - LAST_COMMIT < INTERVAL )); then
+            echo "Not due yet. Skipping."
+            exit 0
+          fi
+
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit --amend --no-edit
+
+          git push \
+            --force-with-lease="refs/heads/${TARGET_BRANCH}:${OLD_SHA}" \
+            origin "HEAD:refs/heads/${TARGET_BRANCH}"
