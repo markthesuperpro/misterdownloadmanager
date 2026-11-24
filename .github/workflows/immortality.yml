@@ -1,0 +1,24 @@
+
+name: GitHub Workflow Immortality
+
+on:
+  schedule:
+    # Once monthly, avoiding the top of the hour
+    - cron: "20 0 1 * *"
+
+  workflow_dispatch:
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+
+    # The built-in GITHUB_TOKEN receives no permissions.
+    permissions: {}
+
+    steps:
+      - name: Keep scheduled workflows alive
+        uses: PhrozenByte/gh-workflow-immortality@v1
+        with:
+          secret: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          repos: ${{ github.repository }}
+          no_repo_names: true
