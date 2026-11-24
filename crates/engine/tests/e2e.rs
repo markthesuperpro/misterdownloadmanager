@@ -4,6 +4,10 @@
 use mdm_engine::{Destination, Download, Options, Request};
 use mdm_labserver::{Config, Faults, LabServer, LogEntry, content};
 
+#[path = "support/resume.rs"]
+mod resume;
+use resume::on_disk;
+
 /// How long a test waits for the lab server's log to take in every request (`settled`).
 const SETTLE: std::time::Duration = std::time::Duration::from_secs(20);
 
@@ -473,6 +477,98 @@ async fn slow_connections_reconnect_instead_of_holding_the_end() {
     );
 }
 
+/// Download `path` from `s` as `fetch` does, counting the connections shed as much slower than
+/// the others (the download's events, read as they come: the log keeps only the last ones).
+async fn fetch_counting_sheds(
+    s: &LabServer,
+    path: &str,
+    seed: u64,
+    opts: Options,
+) -> (Vec<LogEntry>, u64, usize) {
+    let dir = tempfile::tempdir().unwrap();
+    let req = Request {
+        url: s.url(path).parse().unwrap(),
+        headers: Default::default(),
+        dest: Destination::Dir(dir.path().to_owned()),
+    };
+    let slow = mdm_engine::Error::SlowConnection.to_string();
+    let dl = Download::start(req, opts);
+    let (mut seen, mut shed) = (0, 0);
+    loop {
+        let v = dl.snapshot();
+        let since = seen;
+        for e in v.events.iter().filter(|e| e.seq > since) {
+            shed += usize::from(e.text.contains(&slow));
+            seen = e.seq;
+        }
+        if !matches!(
+            v.state,
+            mdm_engine::download::State::Probing
+                | mdm_engine::download::State::Downloading
+                | mdm_engine::download::State::Completing
+        ) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let out = dl.wait().await.expect("download succeeds");
+    let data = std::fs::read(&out.path).unwrap();
+    let mut want = vec![0; data.len()];
+    content::fill(seed, 0, &mut want);
+    assert!(data == want, "content mismatch");
+    tokio::time::timeout(SETTLE, s.settled())
+        .await
+        .expect("every request ends");
+    (s.log(), out.size, shed)
+}
+
+#[tokio::test]
+async fn connections_sharing_a_link_are_not_shed() {
+    // One 16 MB/s line the connections share (#896), and ranges answered half a second late (a
+    // far server's handshakes): the first connection has the line to itself meanwhile, then
+    // each of the 8 gets 2 MB/s. Measured against that first speed every one of them read as
+    // "much slower than the others", and they were reconnected together every few seconds (26
+    // times for 96 MB on an 8 MB/s line), each time a dip in the speed and half a second more.
+    let s = server("link_rate=16M&range_latency_ms=500").await;
+    let (_, size, shed) =
+        fetch_counting_sheds(&s, "/gen/80M/line.bin?seed=33", 33, fast_opts()).await;
+    assert_eq!(size, 80 << 20);
+    assert_eq!(shed, 0, "connections sharing the line were shed as slow");
+}
+
+#[tokio::test]
+async fn a_slow_connection_on_a_shared_link_is_still_replaced() {
+    // The same shared line, every third request crawling at 1 KB/s: a crawling connection is
+    // still far under its share of the line, and reconnects instead of holding the end. Also on
+    // a busy machine, where the disk set the pace while the line was full: the line was then
+    // measured at the end only, at the crawling connections' own pace, and none was shed: a
+    // crawling one held the last piece for a minute in 13 runs of 90 under load.
+    let s = server("link_rate=16M&slow_every=3&slow_rate=1K").await;
+    let opts = Options {
+        min_split: 64 << 10,
+        ..fast_opts()
+    };
+    let (log, size, shed) = fetch_counting_sheds(&s, "/gen/16M/slow.bin?seed=34", 34, opts).await;
+    assert_eq!(size, 16 << 20);
+    let slow: Vec<_> = log
+        .iter()
+        .filter(|e| e.rate == Some(1024))
+        .map(|e| (e.t_end_ms - e.t_start_ms, e.bytes_sent, e.body_len))
+        .collect();
+    assert!(!slow.is_empty(), "the fault was there");
+    // Shed once it read the network for 2 s (`SHED_GRACE`), unless the other connections took
+    // every crawling piece over before that: once the whole download took 1.2 s, its crawling
+    // requests taken over before their first byte.
+    assert!(
+        shed > 0 || slow.iter().all(|(ms, ..)| *ms < 2_000),
+        "no slow connection was shed (ms, sent, asked): {slow:?}"
+    );
+    assert!(
+        slow.iter().all(|(ms, ..)| *ms < 20_000),
+        "a slow request held its piece (ms, sent, asked): {slow:?}"
+    );
+}
+
 #[tokio::test]
 async fn a_weak_etag_means_no_if_range() {
     let s = server("rate=4M&etag=weak").await;
@@ -498,6 +594,32 @@ async fn per_node_etags_fall_back_to_the_date() {
         log.iter()
             .any(|e| e.status == 206 && e.if_range.as_deref().is_some_and(|v| !v.starts_with('"'))),
         "validated with Last-Modified"
+    );
+}
+
+/// #1577: a CDN in front of two copies of the file, each with its own ETag and Last-Modified
+/// (ModelScope's nodes fetch from two origins), both sending the whole file's digest. A copy
+/// that doesn't match the `If-Range` answers with the whole file: the download goes on by the
+/// digest, segmented, instead of falling back to one connection or stopping with "the file
+/// changed on the server".
+#[tokio::test]
+async fn copies_with_their_own_validators_go_on_by_their_digest() {
+    let s = server("rate=4M&nodes=2&digest=1").await;
+    let (log, size) = fetch(&s, "/gen/8M?seed=23", 23, fast_opts()).await;
+    assert_eq!(size, 8 << 20);
+    assert!(
+        log.iter().any(|e| e.range.is_some() && e.status == 200),
+        "the other copy refused the If-Range"
+    );
+    assert!(
+        log.iter()
+            .filter(|e| e.status == 206 && e.if_range.is_none())
+            .count()
+            > 1,
+        "still segmented, by the digest: {:?}",
+        log.iter()
+            .map(|e| (e.status, e.if_range.clone()))
+            .collect::<Vec<_>>()
     );
 }
 
@@ -752,24 +874,6 @@ async fn paused(s: &LabServer, path: &str) -> (tempfile::TempDir, std::path::Pat
     (dir, mdm_engine::state::state_path(&file))
 }
 
-/// Bytes of `range` (a `Range` header, `bytes=a-b`; none: the whole file) that the saved
-/// segments say were already on disk: outside every segment's part still to fetch.
-fn on_disk(range: Option<&str>, saved: &mdm_engine::state::ResumeState) -> u64 {
-    let (from, to) = match range.and_then(|r| r.strip_prefix("bytes=")?.split_once('-')) {
-        Some((a, b)) => (
-            a.parse::<u64>().unwrap(),
-            b.parse::<u64>().map_or(saved.size, |b| b + 1),
-        ),
-        None => (0, saved.size),
-    };
-    let to_fetch: u64 = saved
-        .segments
-        .iter()
-        .map(|g| to.min(g.end).saturating_sub(from.max(g.cursor)))
-        .sum();
-    (to - from) - to_fetch
-}
-
 /// Watch `dl` to its end: the file its view last named, and the path it reports. The view is what
 /// the app's row follows.
 async fn view_and_outcome(dl: Download) -> (Option<std::path::PathBuf>, std::path::PathBuf) {
@@ -863,6 +967,188 @@ async fn a_name_given_unlooked_is_numbered_as_it_starts() {
     assert_eq!(view_and_outcome(dl).await.1, free);
 }
 
+/// The generated content `seed` of `size` bytes.
+fn generated(seed: u64, size: usize) -> Vec<u8> {
+    let mut want = vec![0; size];
+    content::fill(seed, 0, &mut want);
+    want
+}
+
+/// #1088: a file the user chose to replace (the system Save dialog's "Replace?" answered Yes)
+/// keeps its name for the download, on a fresh start (`Free`, as Download File Info starts one,
+/// or `File`) and with one connection on a server without ranges. It is there, untouched, while
+/// the download runs, and replaced only as it completes.
+#[tokio::test]
+async fn a_file_chosen_to_be_replaced_is_replaced_as_the_download_completes() {
+    let s = server("").await;
+    for (i, query) in ["seed=21", "seed=21&no_range=true"].iter().enumerate() {
+        for free in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let dest = dir.path().join("taken.7z");
+            std::fs::write(&dest, b"the old file").unwrap();
+            // Held back at 512 KiB: it is looked at mid-way, then let go.
+            s.set_faults(Faults {
+                stall_at: Some(512 << 10),
+                ..Faults::default()
+            });
+            let dl = Download::start(
+                Request {
+                    url: s.url(&format!("/gen/1M/taken.7z?{query}")).parse().unwrap(),
+                    headers: Default::default(),
+                    dest: if free {
+                        Destination::Free(dest.clone())
+                    } else {
+                        Destination::File(dest.clone())
+                    },
+                },
+                Options {
+                    replace_existing: true,
+                    ..fast_opts()
+                },
+            );
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            while dl.snapshot().downloaded == 0 {
+                assert!(std::time::Instant::now() < deadline, "never started");
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            assert_eq!(dl.snapshot().file.as_deref(), Some(dest.as_path()), "{i}");
+            assert_eq!(std::fs::read(&dest).unwrap(), b"the old file", "{i}");
+            assert!(mdm_engine::naming::part_path(&dest).exists(), "{i}");
+            s.set_faults(Faults::default());
+            let (file, path) = view_and_outcome(dl).await;
+            assert_eq!(path, dest, "{i} {free}");
+            assert_eq!(file.as_deref(), Some(dest.as_path()));
+            assert_eq!(std::fs::read(&dest).unwrap(), generated(21, 1 << 20));
+            assert!(!dir.path().join("taken (1).7z").exists());
+            assert!(!mdm_engine::naming::part_path(&dest).exists());
+        }
+    }
+}
+
+/// #1088: a download that fails (its checksum, at the very end) or is cancelled leaves the file
+/// it was to replace as it was.
+#[tokio::test]
+async fn a_file_chosen_to_be_replaced_stays_when_the_download_fails() {
+    let s = server("").await;
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("taken.7z");
+    std::fs::write(&dest, b"the old file").unwrap();
+    let err = Download::start(
+        Request {
+            url: s.url("/gen/256K/taken.7z?seed=22").parse().unwrap(),
+            headers: Default::default(),
+            dest: Destination::Free(dest.clone()),
+        },
+        Options {
+            replace_existing: true,
+            checksum: Some(sha256_of(23, 256 << 10)),
+            ..fast_opts()
+        },
+    )
+    .wait()
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(err, mdm_engine::Error::ChecksumMismatch(_)),
+        "{err}"
+    );
+    assert_eq!(std::fs::read(&dest).unwrap(), b"the old file");
+
+    // Cancelled half-way.
+    s.set_faults(Faults {
+        stall_at: Some(512 << 10),
+        ..Faults::default()
+    });
+    let dl = Download::start(
+        Request {
+            url: s.url("/gen/1M/taken.7z?seed=24").parse().unwrap(),
+            headers: Default::default(),
+            dest: Destination::Free(dest.clone()),
+        },
+        Options {
+            replace_existing: true,
+            ..fast_opts()
+        },
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while dl.snapshot().downloaded == 0 {
+        assert!(std::time::Instant::now() < deadline, "never started");
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    dl.cancel();
+    assert!(matches!(dl.wait().await, Err(mdm_engine::Error::Cancelled)));
+    assert_eq!(std::fs::read(&dest).unwrap(), b"the old file");
+    s.set_faults(Faults::default());
+}
+
+/// #1088: a paused download whose user chose to replace the file at its place replaces it when
+/// a resume completes it (the choice is given again with the resume, as its headers are).
+/// Without the choice, the file there is kept and the download numbered (as before).
+#[tokio::test]
+async fn a_resume_replaces_the_file_chosen_to_be_replaced() {
+    let s = server("rate=1M").await;
+    for replace in [true, false] {
+        let (dir, state) = paused(&s, "/gen/8M/master.mp4?seed=25").await;
+        let dest = mdm_engine::state::ResumeState::load(&state).unwrap().dest;
+        std::fs::write(&dest, b"the old file").unwrap();
+        s.set_faults(Faults::default());
+        let opts = Options {
+            replace_existing: replace,
+            ..fast_opts()
+        };
+        let dl = Download::resume(state.clone(), Default::default(), opts).unwrap();
+        let (file, path) = view_and_outcome(dl).await;
+        assert_eq!(file.as_deref(), Some(path.as_path()));
+        if replace {
+            assert_eq!(path, dest);
+        } else {
+            assert_eq!(path, dir.path().join("master (1).mp4"));
+            assert_eq!(std::fs::read(&dest).unwrap(), b"the old file");
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), generated(25, 8 << 20));
+        s.set_faults(Faults {
+            rate: Some(1 << 20),
+            ..Faults::default()
+        });
+    }
+}
+
+/// #1088: a file chosen to be replaced that can't be as the download completes (another program
+/// has it open without letting it be deleted) is kept, and the download saved beside it,
+/// numbered. Windows only: elsewhere an open file doesn't stop a rename over it.
+#[cfg(windows)]
+#[tokio::test]
+async fn a_file_that_cannot_be_replaced_is_kept_and_the_download_numbered() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let s = server("").await;
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("taken.7z");
+    std::fs::write(&dest, b"the old file").unwrap();
+    // Read-only sharing: no one may delete or replace it while it is open.
+    let held = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(1) // FILE_SHARE_READ
+        .open(&dest)
+        .unwrap();
+    let dl = Download::start(
+        Request {
+            url: s.url("/gen/256K/taken.7z?seed=26").parse().unwrap(),
+            headers: Default::default(),
+            dest: Destination::Free(dest.clone()),
+        },
+        Options {
+            replace_existing: true,
+            ..fast_opts()
+        },
+    );
+    let (file, path) = view_and_outcome(dl).await;
+    drop(held);
+    assert_eq!(path, dir.path().join("taken (1).7z"));
+    assert_eq!(file.as_deref(), Some(path.as_path()));
+    assert_eq!(std::fs::read(&dest).unwrap(), b"the old file");
+    assert_eq!(std::fs::read(&path).unwrap(), generated(26, 256 << 10));
+}
+
 /// The same for a resumed download: the row follows, and the resume itself still works.
 #[tokio::test]
 async fn the_view_names_the_file_when_a_resume_finds_its_place_taken() {
@@ -927,6 +1213,127 @@ async fn pause_and_resume_continues_where_it_stopped() {
     );
 }
 
+/// `resume_or_start` looks at the disk on the download's own task: with a state there it goes
+/// on from it (showing what the caller showed until it knows), without one it starts from
+/// scratch, and a state that doesn't read fails it, its data left alone.
+#[tokio::test]
+async fn resume_or_start_finds_its_state_beside_the_caller() {
+    let s = server("rate=1M").await;
+    let (dir, state) = paused(&s, "/gen/8M/r.bin?seed=21").await;
+    let saved = mdm_engine::state::ResumeState::load(&state).unwrap();
+    let before = saved.downloaded();
+    s.set_faults(Faults::default());
+    let req = |dest: Destination| Request {
+        url: s.url("/gen/8M/r.bin?seed=21").parse().unwrap(),
+        headers: Default::default(),
+        dest,
+    };
+    let dl = Download::resume_or_start(
+        state.clone(),
+        req(Destination::File(saved.dest.clone())),
+        fast_opts(),
+        None,
+        before,
+    );
+    assert!(dl.snapshot().downloaded >= before, "shows what it had");
+    let out = dl.wait().await.unwrap();
+    assert_eq!(out.path, saved.dest);
+    let mut want = vec![0; 8 << 20];
+    content::fill(21, 0, &mut want);
+    assert!(std::fs::read(&out.path).unwrap() == want, "resumed whole");
+    assert!(!state.exists());
+
+    // No state: from scratch, into the file asked for.
+    let fresh = dir.path().join("fresh.bin");
+    let out = Download::resume_or_start(
+        mdm_engine::state::state_path(&fresh),
+        req(Destination::File(fresh.clone())),
+        fast_opts(),
+        None,
+        123,
+    )
+    .wait()
+    .await
+    .unwrap();
+    assert_eq!(out.path, fresh);
+    assert!(std::fs::read(&fresh).unwrap() == want, "downloaded whole");
+
+    // A state that doesn't read: failed, its data there as it was.
+    let broken = dir.path().join("broken.bin");
+    let broken_state = mdm_engine::state::state_path(&broken);
+    std::fs::write(&broken_state, b"not a state").unwrap();
+    let err = Download::resume_or_start(
+        broken_state.clone(),
+        req(Destination::File(broken.clone())),
+        fast_opts(),
+        None,
+        5,
+    )
+    .wait()
+    .await
+    .unwrap_err();
+    assert!(matches!(err, mdm_engine::Error::BadState(_)), "{err}");
+    assert_eq!(std::fs::read(&broken_state).unwrap(), b"not a state");
+    assert!(!broken.exists());
+}
+
+/// A download that starts while its place's old files are being deleted (`naming::clear`: a
+/// Redownload, a duplicate overwritten) waits for the delete before it looks at the disk: it
+/// neither resumes from the old state nor numbers its name past the old file, and it takes the
+/// name they leave. Cancelled meanwhile, it stops without waiting.
+#[tokio::test]
+async fn a_start_waits_for_its_places_old_files() {
+    let s = server("").await;
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("again.bin");
+    // The old download's state (another address: resuming it would fail) and finished file.
+    std::fs::write(mdm_engine::state::state_path(&dest), b"the old state").unwrap();
+    std::fs::write(&dest, b"the old file").unwrap();
+    let req = |dest: Destination| Request {
+        url: s.url("/gen/1M?seed=3").parse().unwrap(),
+        headers: Default::default(),
+        dest,
+    };
+    let clearing = mdm_engine::naming::clear(&dest);
+    let resumed = Download::resume_or_start(
+        mdm_engine::state::state_path(&dest),
+        req(Destination::File(dest.clone())),
+        fast_opts(),
+        None,
+        0,
+    );
+    let free = dir.path().join("free.bin");
+    std::fs::write(&free, b"old").unwrap();
+    let freed = mdm_engine::naming::clear(&free);
+    let numbered = Download::start(req(Destination::Free(free.clone())), fast_opts());
+    let cancelled = Download::start(
+        req(Destination::Free(dir.path().join("c.bin"))),
+        fast_opts(),
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(!mdm_engine::naming::part_path(&dest).exists(), "waits");
+    assert_eq!(std::fs::read(&free).unwrap(), b"old");
+    cancelled.cancel();
+    let err = tokio::time::timeout(std::time::Duration::from_secs(5), cancelled.wait())
+        .await
+        .expect("a cancel doesn't wait for the delete")
+        .unwrap_err();
+    assert!(matches!(err, mdm_engine::Error::Cancelled), "{err}");
+    // The delete, beside the downloads.
+    std::fs::remove_file(mdm_engine::state::state_path(&dest)).unwrap();
+    std::fs::remove_file(&dest).unwrap();
+    std::fs::remove_file(&free).unwrap();
+    drop((clearing, freed));
+    let mut want = vec![0; 1 << 20];
+    content::fill(3, 0, &mut want);
+    let out = resumed.wait().await.unwrap();
+    assert_eq!(out.path, dest, "from scratch, under its name");
+    assert!(std::fs::read(&dest).unwrap() == want);
+    let out = numbered.wait().await.unwrap();
+    assert_eq!(out.path, free, "the name the old file left");
+    assert!(!mdm_engine::naming::being_cleared(dir.path()));
+}
+
 #[tokio::test]
 async fn resume_detects_changed_file() {
     let s = server("rate=1M").await;
@@ -943,6 +1350,291 @@ async fn resume_detects_changed_file() {
         .await
         .unwrap_err();
     assert!(matches!(err, mdm_engine::Error::FileChanged), "{err}");
+}
+
+/// #1577: a download paused on one copy goes on when its CDN now also serves another copy (its
+/// own ETag and date, the same digest), on several connections, and the file is whole.
+#[tokio::test]
+async fn resume_goes_on_across_copies_with_one_digest() {
+    let s = server("rate=1M&digest=1").await;
+    let (_dir, state) = paused(&s, "/gen/8M/model.gguf?seed=25").await;
+    let saved = mdm_engine::state::ResumeState::load(&state).unwrap();
+    assert!(!saved.validators.digests.is_empty(), "the digest is kept");
+    s.set_faults(Faults::parse("rate=1M&digest=1&nodes=2").unwrap());
+    s.clear_log();
+    let out = Download::resume(state.clone(), Default::default(), fast_opts())
+        .unwrap()
+        .wait()
+        .await
+        .expect("goes on by the digest");
+    let mut want = vec![0; 8 << 20];
+    content::fill(25, 0, &mut want);
+    assert!(std::fs::read(&out.path).unwrap() == want);
+    tokio::time::timeout(SETTLE, s.settled()).await.unwrap();
+    assert!(
+        s.log()
+            .iter()
+            .any(|e| e.status == 206 && e.if_range.is_none())
+    );
+}
+
+/// #1577: a download paused before MDM kept digests (or on a server that sent none) learns
+/// its version's digest from a part the server validated with `If-Range`, keeps it in its
+/// state, and then goes on across copies.
+#[tokio::test]
+async fn a_resumed_download_learns_its_digest_from_a_validated_part() {
+    let s = server("rate=1M").await;
+    let (dir, state) = paused(&s, "/gen/8M/model.gguf?seed=29").await;
+    let first = mdm_engine::state::ResumeState::load(&state).unwrap();
+    assert!(first.validators.digests.is_empty());
+    // One copy, now sending its digest: resumed, then paused again a little later.
+    s.set_faults(Faults::parse("rate=1M&digest=1").unwrap());
+    let opts = Options {
+        save_interval: std::time::Duration::from_millis(100),
+        ..fast_opts()
+    };
+    let dl = Download::resume(state.clone(), Default::default(), opts).unwrap();
+    // Further than the first pause: parts came in, validated.
+    let start = first.downloaded();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while dl.snapshot().downloaded < start + (512 << 10) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the resume never went on"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    dl.cancel();
+    assert!(matches!(dl.wait().await, Err(mdm_engine::Error::Cancelled)));
+    tokio::time::timeout(SETTLE, s.settled()).await.unwrap();
+    let saved = mdm_engine::state::ResumeState::load(&state).unwrap();
+    assert!(
+        !saved.validators.digests.is_empty(),
+        "{:?}",
+        saved.validators
+    );
+    // Now behind a CDN with the other copy too.
+    s.set_faults(Faults::parse("rate=4M&digest=1&nodes=2").unwrap());
+    let out = Download::resume(state, Default::default(), fast_opts())
+        .unwrap()
+        .wait()
+        .await
+        .expect("goes on by the digest it learned");
+    let mut want = vec![0; 8 << 20];
+    content::fill(29, 0, &mut want);
+    assert!(std::fs::read(&out.path).unwrap() == want);
+    drop(dir);
+}
+
+/// #1577: a download paused without a digest, resumed where both copies answer: an answer from
+/// the other copy waits until a part of its own version teaches it the digest, then it goes on
+/// by it, in the same run.
+#[tokio::test]
+async fn resume_without_a_digest_learns_it_while_the_other_copy_answers() {
+    let s = server("rate=1M").await;
+    let (_dir, state) = paused(&s, "/gen/8M/model.gguf?seed=30").await;
+    assert!(
+        mdm_engine::state::ResumeState::load(&state)
+            .unwrap()
+            .validators
+            .digests
+            .is_empty()
+    );
+    s.set_faults(Faults::parse("rate=1M&digest=1&nodes=2").unwrap());
+    let out = Download::resume(state, Default::default(), fast_opts())
+        .unwrap()
+        .wait()
+        .await
+        .expect("goes on by the digest it learned");
+    let mut want = vec![0; 8 << 20];
+    content::fill(30, 0, &mut want);
+    assert!(std::fs::read(&out.path).unwrap() == want);
+}
+
+/// ... and when no part of its version comes (the file changed on every copy), the wait ends and
+/// the download stops as a changed file, nothing written.
+#[tokio::test]
+async fn resume_without_a_digest_stops_when_every_copy_changed() {
+    let s = server("rate=1M").await;
+    let (dir, state) = paused(&s, "/gen/8M/model.gguf?seed=31").await;
+    let part = mdm_engine::naming::part_path(&dir.path().join("model.gguf"));
+    let before = std::fs::read(&part).unwrap();
+    s.set_faults(Faults::parse("rate=1M&digest=1&nodes=2&etag_change_every=1").unwrap());
+    let err = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        Download::resume(state, Default::default(), fast_opts())
+            .unwrap()
+            .wait(),
+    )
+    .await
+    .expect("the wait for a digest ends")
+    .unwrap_err();
+    assert!(matches!(err, mdm_engine::Error::FileChanged), "{err}");
+    assert!(std::fs::read(&part).unwrap() == before, "nothing written");
+}
+
+/// The same copies without a digest: nothing proves they are one file, so a resumed download
+/// that meets the other copy stops, as before (#1577: never two versions in one file).
+#[tokio::test]
+async fn resume_across_copies_without_a_digest_stops() {
+    let s = server("rate=1M").await;
+    let (_dir, state) = paused(&s, "/gen/8M/model.gguf?seed=28").await;
+    s.set_faults(Faults::parse("rate=1M&nodes=2").unwrap());
+    let err = Download::resume(state, Default::default(), fast_opts())
+        .unwrap()
+        .wait()
+        .await
+        .unwrap_err();
+    assert!(matches!(err, mdm_engine::Error::FileChanged), "{err}");
+    tokio::time::timeout(SETTLE, s.settled()).await.unwrap();
+}
+
+/// The guarantee behind going on by the digest: a file that really changed (another digest on
+/// every copy) still stops the download, and the connections don't stay "Connecting...".
+#[tokio::test]
+async fn resume_across_copies_stops_when_the_digest_changes() {
+    let s = server("rate=1M&digest=1").await;
+    let (dir, state) = paused(&s, "/gen/8M/model.gguf?seed=26").await;
+    let part = mdm_engine::naming::part_path(&dir.path().join("model.gguf"));
+    let before = std::fs::read(&part).unwrap();
+    // Every answer from now on is another version (`etag_change_every=1`: its ETag, date and
+    // digest), from either copy.
+    s.set_faults(Faults::parse("rate=1M&digest=1&nodes=2&etag_change_every=1").unwrap());
+    let dl = Download::resume(state, Default::default(), fast_opts()).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while dl.snapshot().state != mdm_engine::download::State::Failed {
+        assert!(std::time::Instant::now() < deadline, "it never stopped");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let conns = dl.snapshot().connections;
+    assert!(
+        conns.iter().all(|c| !matches!(
+            c.status,
+            mdm_engine::download::ConnStatus::Connecting
+                | mdm_engine::download::ConnStatus::Receiving
+                | mdm_engine::download::ConnStatus::Retrying(_)
+        )),
+        "{conns:?}"
+    );
+    let err = dl.wait().await.unwrap_err();
+    assert!(matches!(err, mdm_engine::Error::FileChanged), "{err}");
+    assert!(std::fs::read(&part).unwrap() == before, "nothing written");
+}
+
+/// Once copies are told apart by their digest only (no `If-Range` sent), a part that carries
+/// no digest, or another one, is never written.
+#[tokio::test]
+async fn a_part_without_the_digest_is_refused_once_going_by_it() {
+    for (faults, digest) in [
+        ("rate=1M", "x-oss-hash-crc64ecma=1"),
+        ("rate=1M&digest=1", "x-oss-hash-crc64ecma=1"),
+    ] {
+        let s = server(faults).await;
+        let (dir, state) = paused(&s, "/gen/8M/model.gguf?seed=27").await;
+        let mut saved = mdm_engine::state::ResumeState::load(&state).unwrap();
+        saved.validators = mdm_engine::state::Validators {
+            digests: vec![digest.into()],
+            by_digest: true,
+            ..Default::default()
+        };
+        std::fs::write(&state, serde_json::to_vec(&saved).unwrap()).unwrap();
+        let part = mdm_engine::naming::part_path(&dir.path().join("model.gguf"));
+        let before = std::fs::read(&part).unwrap();
+        s.clear_log();
+        let err = Download::resume(state, Default::default(), fast_opts())
+            .unwrap()
+            .wait()
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, mdm_engine::Error::FileChanged),
+            "{faults}: {err}"
+        );
+        assert!(
+            std::fs::read(&part).unwrap() == before,
+            "{faults}: nothing written"
+        );
+        tokio::time::timeout(SETTLE, s.settled()).await.unwrap();
+        assert!(s.log().iter().all(|e| e.if_range.is_none()), "{faults}");
+    }
+}
+
+/// A different mirror's same-size answer under other validators must not replace the
+/// validators of the bytes already on disk when its Last-Modified differs.
+#[tokio::test]
+async fn resume_rejects_a_changed_mirror_of_the_same_size() {
+    let s = server("").await;
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("firmware.bin");
+    // The new mirror serves different bytes, with its own ETag and Last-Modified.
+    let target: url::Url = format!(
+        "http://mirror.test:{}/gen/256K/firmware.bin?seed=12&node=1",
+        s.addr().port(),
+    )
+    .parse()
+    .unwrap();
+    let validators = mdm_engine::state::Validators::from_response(
+        Some("\"old-version\""),
+        Some("Wed, 21 Oct 2015 07:28:00 GMT"),
+        Some("Wed, 21 Oct 2015 08:00:00 GMT"),
+        Some("original.test"),
+    );
+    let mut saved = mdm_engine::state::ResumeState::new(
+        target.clone(),
+        target,
+        dest.clone(),
+        256 << 10,
+        validators.clone(),
+    );
+    saved.segments = vec![mdm_engine::planner::SavedSegment {
+        start: 0,
+        cursor: 64 << 10,
+        end: saved.size,
+    }];
+    let mut bytes = vec![0; saved.size as usize];
+    content::fill(11, 0, &mut bytes[..64 << 10]);
+    let part = mdm_engine::naming::part_path(&dest);
+    std::fs::write(&part, &bytes).unwrap();
+    let state = mdm_engine::state::state_path(&dest);
+    std::fs::write(&state, serde_json::to_vec(&saved).unwrap()).unwrap();
+    s.clear_log();
+    let opts = Options {
+        hosts: vec![("mirror.test".into(), vec!["127.0.0.1".parse().unwrap()])],
+        max_connections: 1,
+        // Check the metadata decision itself, independently of the byte overlap check.
+        verify_overlap: 0,
+        ..fast_opts()
+    };
+    let err = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        Download::resume(state.clone(), Default::default(), opts)
+            .unwrap()
+            .wait(),
+    )
+    .await
+    .expect("the changed mirror is refused promptly")
+    .unwrap_err();
+    assert!(matches!(err, mdm_engine::Error::FileChanged), "{err}");
+    assert!(!dest.exists(), "no mixed file is published");
+    assert!(
+        std::fs::read(&part).unwrap() == bytes,
+        "no new bytes written"
+    );
+    assert_eq!(
+        mdm_engine::state::ResumeState::load(&state)
+            .unwrap()
+            .validators,
+        validators,
+        "the original validators are kept"
+    );
+    tokio::time::timeout(SETTLE, s.settled()).await.unwrap();
+    let log = s.log();
+    assert!(log.iter().any(|e| e.range.is_some() && e.status == 200));
+    assert!(
+        log.iter()
+            .all(|e| e.if_range == saved.validators.last_modified),
+        "only the saved date can be sent to another host"
+    );
 }
 
 /// Pause, then drop the saved validator (a server without ETag/Last-Modified): the resume can
@@ -1420,6 +2112,39 @@ async fn changed_file_fails() {
     };
     let err = Download::start(req, fast_opts()).wait().await.unwrap_err();
     assert!(matches!(err, mdm_engine::Error::FileChanged), "{err}");
+}
+
+/// #1646: the file changes during the very first burst of requests, before any part has come
+/// (`etag_change_every=2`: the first answer is one version, every ranged request after it gets
+/// the next one whole, its `If-Range` refused). With a whole-file digest on the answers
+/// (`digest=1`) that is a changed file, as it is once a part has come (`changed_file_fails`);
+/// before, those answers read as a server without ranges and the download went on with its
+/// first connection alone, saying nothing.
+#[tokio::test]
+async fn a_file_that_changes_in_the_first_burst_fails_by_its_digest() {
+    let s = server("rate=2M&digest=1&etag_change_every=2").await;
+    let dir = tempfile::tempdir().unwrap();
+    let req = Request {
+        url: s.url("/gen/4M").parse().unwrap(),
+        headers: Default::default(),
+        dest: Destination::Dir(dir.path().to_owned()),
+    };
+    let err = Download::start(req, fast_opts()).wait().await.unwrap_err();
+    assert!(matches!(err, mdm_engine::Error::FileChanged), "{err}");
+    // The ranged requests were all answered whole, with the next version: none was a part.
+    let ranged: Vec<_> = s.log().into_iter().filter(|e| e.range.is_some()).collect();
+    assert!(!ranged.is_empty(), "no ranged request was sent");
+    assert!(ranged.iter().all(|e| e.status == 200), "{ranged:?}");
+}
+
+/// The same without a digest: nothing tells those answers from a server that ignores ranges
+/// (a CDN's nodes each have their own ETag and date, `per_node_etag`), so the download goes on
+/// with its first connection, and what it saves is that connection's version, whole.
+#[tokio::test]
+async fn without_a_digest_a_first_burst_of_whole_answers_is_a_server_without_ranges() {
+    let s = server("rate=2M&etag_change_every=2").await;
+    let (_, size) = fetch(&s, "/gen/4M", 0, fast_opts()).await;
+    assert_eq!(size, 4 << 20);
 }
 
 #[tokio::test]
@@ -1917,18 +2642,185 @@ async fn a_slow_disk_does_not_stop_the_transfer() {
     tokio::time::timeout(SETTLE, s.settled())
         .await
         .expect("every request ends");
-    let flushes = disk.stats().flushes;
+    let stats = disk.stats();
+    let (flushes, holds) = (stats.flushes, stats.holds);
     eprintln!(
-        "disk behind: {} shed, every byte in {:?}, longest quiet {:?}, flushes {flushes:?}",
+        "disk behind: {} shed, every byte in {:?}, longest quiet {:?}, flushes {flushes:?}, \
+         writes held {holds:?}",
         behind.shed, behind.received, behind.quiet
     );
     // Measured: none shed, at most 11 ms without a byte (until the last sixteenth, which may
-    // wait for the disk with the rest of its connection's memory).
+    // wait for the disk with the rest of its connection's memory). One flush during the
+    // transfer, then the last one once every byte is in: a second one right after the first,
+    // expected by the seconds since it rather than the bytes, held the writes for 3 s on
+    // GitHub's macOS runners and nothing arrived for 1.2 to 1.5 s of it (`Synced::expected`).
+    // The flush during the transfer holds the writes 0.7 to 1.2 s (the 33 to 57 MiB the disk
+    // still has to write), on GitHub's Linux runners as here; the machine's own flush after it
+    // took 0.01 to 0.9 s there, and once, on a runner whose disk was busy, several seconds
+    // (#1626: the flush 7.6 s, nothing arrived for 6 s): it held the writes too then, a stall
+    // of the runner's disk, not of the disk modelled here. With the runner's disk held to
+    // 16 MiB/s, the same: 9 runs in 12 failed (each whose flush came during the transfer), 4 s
+    // of real flush, 3.2 to 3.4 s without a byte; with the real flush outside the hold, none.
     assert_eq!(behind.shed, 0, "connections shed for the disk's pace");
     assert!(
         behind.quiet < std::time::Duration::from_millis(1200),
-        "nothing arrived for {:?} (flushes: {flushes:?})",
+        "nothing arrived for {:?} (flushes: {flushes:?}, writes held {holds:?})",
         behind.quiet
+    );
+}
+
+/// How long a pause or a resume may take here (#1328): generous for a busy runner, where a stop
+/// once took 3.4 s (#201), and far from what the disk took before the fix (10 s and more).
+const PROMPT: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// #1328: Pause while the disk is flushing (a disk slower than the network, where a flush and
+/// then the last one took 80 s measured): the connections close and the download says it is
+/// stopped at once; what they received and the resume state are written once the disk lets
+/// them. A resume asked for meanwhile waits for that, and goes on from the state saved last
+/// rather than the one it was handed.
+#[tokio::test]
+async fn pause_is_prompt_while_the_disk_flushes() {
+    use mdm_engine::download::State;
+    const SIZE: u64 = 32 << 20;
+    let s = server("rate=512K").await; // 8 connections, 4 MB/s together
+    let dir = tempfile::tempdir().unwrap();
+    let flush = std::time::Duration::from_secs(10);
+    let disk = mdm_engine::slowdisk::SlowDisk::slow_flush(flush);
+    let opts = Options {
+        save_interval: std::time::Duration::from_millis(100),
+        slow_disk: Some(disk.clone()),
+        ..fast_opts()
+    };
+    let dl = Download::start(
+        Request {
+            url: s.url("/gen/32M/paused.bin?seed=1328").parse().unwrap(),
+            headers: Default::default(),
+            dest: Destination::Dir(dir.path().to_owned()),
+        },
+        opts,
+    );
+    // A flush during the transfer holds the disk (and the writes): the first comes once 2 MiB
+    // are in.
+    let deadline = std::time::Instant::now() + SETTLE;
+    while disk.gate.try_read().is_ok() {
+        assert!(std::time::Instant::now() < deadline, "no flush began");
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    let file = dl.snapshot().file.expect("the download has its file");
+    let state = mdm_engine::state::state_path(&file);
+    let asked = std::time::Instant::now();
+    dl.cancel();
+    while !matches!(dl.snapshot().state, State::Stopping | State::Cancelled) {
+        assert!(
+            asked.elapsed() < PROMPT,
+            "still {:?} {:?} after Pause, the disk flushing",
+            dl.snapshot().state,
+            asked.elapsed()
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    let stopped = asked.elapsed();
+    // The connections are closed: the server sees every request end.
+    tokio::time::timeout(PROMPT.saturating_sub(asked.elapsed()), s.settled())
+        .await
+        .expect("the connections closed at once");
+    let closed = asked.elapsed();
+    assert!(
+        dl.snapshot().state == State::Stopping,
+        "the flush still runs"
+    );
+    assert!(mdm_engine::naming::is_settling(&file));
+    // What came in: all of it is saved once the disk lets it.
+    let received = dl.snapshot().downloaded;
+    // The state as it is now, from before the flush under way: resumed from it, everything
+    // since would come again.
+    let stale = mdm_engine::state::ResumeState::load(&state).unwrap();
+    assert!(
+        stale.downloaded() < received,
+        "{} of {received}",
+        stale.downloaded()
+    );
+    s.clear_log();
+    let resumed = Download::resume(state.clone(), Default::default(), fast_opts()).unwrap();
+    assert!(matches!(dl.wait().await, Err(mdm_engine::Error::Cancelled)));
+    assert!(!mdm_engine::naming::is_settling(&file));
+    eprintln!(
+        "#1328: stopped {stopped:?} after Pause, connections closed {closed:?}, saved {:?}",
+        asked.elapsed()
+    );
+    // The state the stopped download saved last (the resume's own first save, as it starts,
+    // writes the same parts; its next comes seconds later).
+    let last = mdm_engine::state::ResumeState::load(&state).unwrap();
+    assert!(
+        last.downloaded() >= received,
+        "{} of {received} saved",
+        last.downloaded()
+    );
+    let out = resumed.wait().await.expect("the resume completes");
+    assert_eq!((out.path.as_path(), out.size), (file.as_path(), SIZE));
+    let data = std::fs::read(&out.path).unwrap();
+    let mut want = vec![0; data.len()];
+    content::fill(1328, 0, &mut want);
+    assert!(data == want, "content mismatch");
+    // The resume asked again only for each part's check of what was saved (`verify_overlap`):
+    // from the state it was handed, it would have asked for everything since the flush.
+    tokio::time::timeout(SETTLE, s.settled())
+        .await
+        .expect("every request ends");
+    let again: Vec<u64> = s
+        .log()
+        .iter()
+        .map(|e| on_disk(e.range.as_deref(), &last))
+        .collect();
+    assert!(
+        again
+            .iter()
+            .all(|n| *n <= Options::default().verify_overlap),
+        "bytes saved asked again, by request: {again:?}"
+    );
+}
+
+/// #1328: a resume's first part is asked for as soon as the original address has led it to
+/// today's target, never after a flush of the part file: a signed link asked again changes only
+/// the address in the state, which needs no flush, and that write goes beside the connections.
+/// Before, the state was written, the part file flushed with it, before any connection: on a busy
+/// disk that took seconds (here 5 s).
+#[tokio::test]
+async fn a_resume_asks_for_its_first_part_at_once() {
+    let s = server("rate=1M").await;
+    let target = s.url("/gen/8M/r.bin?seed=1329");
+    let (_dir, state) = paused(&s, &format!("{}&ttl_ms=600000", redirect_path(&target))).await;
+    let saved = mdm_engine::state::ResumeState::load(&state).unwrap();
+    s.clear_log();
+    let opts = Options {
+        slow_disk: Some(mdm_engine::slowdisk::SlowDisk::slow_every_flush(
+            std::time::Duration::from_secs(5),
+        )),
+        ..fast_opts()
+    };
+    let asked = std::time::Instant::now();
+    let dl = Download::resume(state, Default::default(), opts).unwrap();
+    while dl.snapshot().downloaded <= saved.downloaded() {
+        assert!(
+            asked.elapsed() < PROMPT,
+            "no byte {:?} after Resume",
+            asked.elapsed()
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    eprintln!("#1328: first bytes {:?} after Resume", asked.elapsed());
+    dl.cancel();
+    let _ = dl.wait().await;
+    tokio::time::timeout(SETTLE, s.settled())
+        .await
+        .expect("every request ends");
+    // It went the way a signed link's resume goes: the original address asked again first (a new
+    // link, so a new address to save), then the parts.
+    assert!(
+        s.log()
+            .iter()
+            .any(|e| e.range.as_deref() == Some("bytes=0-0") && e.query.is_some()),
+        "the original address wasn't asked again"
     );
 }
 
@@ -2333,4 +3225,356 @@ async fn a_scripts_video_is_named_by_what_it_is() {
     content::fill_with_head(5, 0, &mut want, mp4);
     assert!(data == want, "the kept answer's first bytes are the file's");
     assert_eq!(out.path.file_name().unwrap(), "Lecture one.mp4");
+}
+
+/// #1427: a link whose first address only redirects (302) to the file, and whose name is only in
+/// the file's own answer: the download and Download File Info's look name it from that answer,
+/// as Chrome and Firefox do, through a relative `Location` and two redirects too. A plain
+/// `filename` percent-encoded (`My%20Report.pdf`) is decoded as both browsers decode it, and so
+/// is one in RFC 2047's encoded words.
+#[tokio::test]
+async fn a_name_only_the_redirected_answer_gives_is_the_files() {
+    let s = server("").await;
+    let enc = |u: &str| url::form_urlencoded::byte_serialize(u.as_bytes()).collect::<String>();
+    // The file, answering with this Content-Disposition, at an address that names nothing.
+    let file = |cd: &str| format!("gen/64K/download?seed=7&cdraw={}", enc(cd));
+    let both = "attachment; filename=\"fallback.bin\"; \
+                filename*=UTF-8''My%20Report%20%E2%80%93%20v2.pdf";
+    let cases = [
+        // Both names: filename* wins, decoded (RFC 8187).
+        (
+            format!("/redirect?to={}", enc(&s.url(&format!("/{}", file(both))))),
+            "My Report – v2.pdf",
+        ),
+        // Only filename*.
+        (
+            format!(
+                "/redirect?to={}",
+                enc(&s.url(&format!(
+                    "/{}",
+                    file("attachment; filename*=UTF-8''My%20Report%20%E2%80%93%20v2.pdf")
+                )))
+            ),
+            "My Report – v2.pdf",
+        ),
+        // Only a plain filename, percent-encoded: decoded, as Chrome and Firefox do.
+        (
+            format!(
+                "/redirect?to={}",
+                enc(&s.url(&format!(
+                    "/{}",
+                    file("attachment; filename=\"My%20Report.pdf\"")
+                )))
+            ),
+            "My Report.pdf",
+        ),
+        // The same unquoted.
+        (
+            format!(
+                "/redirect?to={}",
+                enc(&s.url(&format!(
+                    "/{}",
+                    file("attachment; filename=My%20Report%20v3.pdf")
+                )))
+            ),
+            "My Report v3.pdf",
+        ),
+        // A plain filename in RFC 2047's encoded words (both browsers read them).
+        (
+            format!(
+                "/redirect?to={}",
+                enc(&s.url(&format!(
+                    "/{}",
+                    file("attachment; filename=\"=?UTF-8?Q?My_Report_=E2=80=93_v6.pdf?=\"")
+                )))
+            ),
+            "My Report – v6.pdf",
+        ),
+        // A relative Location (`gen/…`, from `/redirect`).
+        (
+            format!("/redirect?to={}", enc(&file(both))),
+            "My Report – v2.pdf",
+        ),
+        // Two redirects.
+        (
+            format!(
+                "/redirect?to={}",
+                enc(&format!(
+                    "/redirect?to={}",
+                    enc(&format!("/{}", file(both)))
+                ))
+            ),
+            "My Report – v2.pdf",
+        ),
+    ];
+    for (path, want) in cases {
+        let url: url::Url = s.url(&path).parse().unwrap();
+        // Download File Info's look.
+        let info = mdm_engine::probe(url.clone(), Default::default(), &fast_opts())
+            .await
+            .unwrap_or_else(|e| panic!("{path}: {e}"));
+        assert_eq!(info.file_name, want, "the look at {path}");
+        assert!(
+            info.final_url.path().starts_with("/gen/"),
+            "{path}: ended at {}",
+            info.final_url
+        );
+        // The download the engine names (Add URL without its dialog, the command line).
+        let dir = tempfile::tempdir().unwrap();
+        let req = Request {
+            url,
+            headers: Default::default(),
+            dest: Destination::Dir(dir.path().to_owned()),
+        };
+        let out = Download::start(req, fast_opts())
+            .wait()
+            .await
+            .unwrap_or_else(|e| panic!("{path}: {e}"));
+        assert_eq!(
+            out.path.file_name().unwrap(),
+            want,
+            "the download of {path}"
+        );
+        assert_eq!(out.size, 64 << 10);
+    }
+}
+
+/// #1705: a download started under a name still to be numbered (`Destination::Free`) that was
+/// at that name already (killed before its caller kept the name) resumes its own state there.
+/// Another address's state at the name is someone else's: the name is numbered past it.
+#[tokio::test]
+async fn a_name_to_be_numbered_resumes_the_downloads_own_state() {
+    let s = server("rate=1M").await;
+    let (dir, state) = paused(&s, "/gen/8M/kill.bin?seed=1705").await;
+    let saved = mdm_engine::state::ResumeState::load(&state).unwrap();
+    let dest = saved.dest.clone();
+    s.set_faults(Faults::default());
+    s.clear_log();
+    let own = Request {
+        url: saved.url.clone(),
+        headers: Default::default(),
+        dest: Destination::Free(dest.clone()),
+    };
+    let dl = Download::start_or_resume_own(state.clone(), own, fast_opts(), None);
+    let out = dl.wait().await.expect("resumes");
+    assert_eq!(out.path, dest);
+    assert_eq!(std::fs::read(&dest).unwrap(), generated(1705, 8 << 20));
+    assert!(!state.exists() && !dir.path().join("kill (1).bin").exists());
+    tokio::time::timeout(SETTLE, s.settled())
+        .await
+        .expect("every request ends");
+    let log = s.log();
+    for e in &log {
+        let again = on_disk(e.range.as_deref(), &saved);
+        assert!(again <= fast_opts().verify_overlap, "{:?}", e.range);
+    }
+
+    s.set_faults(Faults::parse("rate=1M").unwrap());
+    let (dir, state) = paused(&s, "/gen/8M/kill.bin?seed=1").await;
+    let saved = mdm_engine::state::ResumeState::load(&state).unwrap();
+    s.set_faults(Faults::default());
+    let other = Request {
+        url: s.url("/gen/1M/kill.bin?seed=2").parse().unwrap(),
+        headers: Default::default(),
+        dest: Destination::Free(saved.dest.clone()),
+    };
+    let dl = Download::start_or_resume_own(state.clone(), other, fast_opts(), None);
+    let out = dl.wait().await.expect("downloads under the next name");
+    assert_eq!(out.path, dir.path().join("kill (1).bin"));
+    assert_eq!(std::fs::read(&out.path).unwrap(), generated(2, 1 << 20));
+    let left = mdm_engine::state::ResumeState::load(&state).unwrap();
+    assert_eq!(left, saved, "the other download's state is as it was");
+}
+
+/// A file served from `--files` through `garble` (#1661): downloaded on one connection with
+/// `keep_state`, its last resume state handed back, and the download's server.
+async fn garbled_download(
+    data: &[u8],
+    garble: u64,
+) -> (
+    LabServer,
+    tempfile::TempDir,
+    tempfile::TempDir,
+    std::path::PathBuf,
+    std::sync::Arc<mdm_engine::state::ResumeState>,
+) {
+    let served = tempfile::tempdir().unwrap();
+    let file = served.path().join("a.zip");
+    std::fs::write(&file, data).unwrap();
+    // Dated an hour ago: a date within a second of the answer's isn't a validator (RFC 9110
+    // §8.8.2.2), and the download would have none to ask `If-Range` with.
+    let hour_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+    std::fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_modified(hour_ago)
+        .unwrap();
+    let s = LabServer::start(Config {
+        files: Some(served.path().to_owned()),
+        ..Config::default()
+    })
+    .await
+    .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let req = Request {
+        url: s
+            .url(&format!("/files/a.zip?garble={garble}"))
+            .parse()
+            .unwrap(),
+        headers: Default::default(),
+        dest: Destination::Dir(dir.path().to_owned()),
+    };
+    // One connection: the one answer that carries the garbled bytes is the one written. The lab
+    // garbles only the first answer that carries the byte, and with more connections the first
+    // one (the whole file, garbled) can be split off before it reads that far: the byte then
+    // comes, right, from a later range, and the file is whole (seen now and then, in CI too).
+    let opts = Options {
+        keep_state: true,
+        max_connections: 1,
+        ..fast_opts()
+    };
+    let dl = Download::start(req, opts);
+    let until = std::time::Instant::now() + SETTLE;
+    let kept = loop {
+        let v = dl.snapshot();
+        if v.state == mdm_engine::download::State::Done {
+            break v.kept.expect("its last state, handed back");
+        }
+        assert!(
+            v.state != mdm_engine::download::State::Failed,
+            "{:?}",
+            v.error
+        );
+        assert!(
+            std::time::Instant::now() < until,
+            "no end: {:?}, {:?}, {:?}",
+            v.state,
+            v.connections,
+            v.events
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    };
+    let path = dl.wait().await.unwrap().path;
+    assert_eq!(kept.dest, path);
+    assert!(
+        !mdm_engine::state::state_path(&path).exists(),
+        "its state file still goes"
+    );
+    (s, served, dir, path, kept)
+}
+
+/// #1661: an archive test found damage in a finished file: the file is a part file again with
+/// only that range missing, and resuming it fetches only that range (and the overlap check's
+/// bytes before it), from the same server and the same version (`If-Range` with the date it was
+/// downloaded under); the file comes out whole.
+#[tokio::test]
+async fn a_finished_files_damaged_range_comes_again() {
+    let mut data = vec![0; 2 << 20];
+    content::fill(21, 0, &mut data);
+    let at = 1_000_000;
+    let (s, _served, _dir, path, kept) = garbled_download(&data, at).await;
+    let got = std::fs::read(&path).unwrap();
+    let differ: Vec<usize> = (0..data.len()).filter(|&i| got[i] != data[i]).collect();
+    assert_eq!(
+        differ,
+        (1_000_000..1_000_064).collect::<Vec<_>>(),
+        "garbled"
+    );
+    let bad = (at - 1000, at + 1000);
+    let modified = std::fs::metadata(&path).unwrap().modified().ok();
+    let missing = mdm_engine::repair::reopen(&kept, &[bad], modified).unwrap();
+    assert_eq!(missing, 2000);
+    let state = mdm_engine::state::state_path(&path);
+    tokio::time::timeout(SETTLE, s.settled()).await.unwrap();
+    s.clear_log();
+    let out = Download::resume(state.clone(), Default::default(), fast_opts())
+        .unwrap()
+        .wait()
+        .await
+        .unwrap();
+    assert_eq!(out.path, path);
+    assert!(std::fs::read(&path).unwrap() == data, "whole again");
+    assert!(!state.exists());
+    tokio::time::timeout(SETTLE, s.settled()).await.unwrap();
+    // Only the damaged range, from the overlap check's bytes before it, each under the date the
+    // file was downloaded under.
+    let overlap = mdm_engine::repair::OVERLAP;
+    let log = s.log();
+    assert!(!log.is_empty());
+    let date = kept.validators.last_modified.clone();
+    assert!(date.is_some(), "the server dates its files");
+    for e in &log {
+        assert_eq!(e.if_range, date, "{:?}", e.range);
+        let range = e.range.as_deref().expect("a range, never the whole file");
+        let (from, to) = range.trim_start_matches("bytes=").split_once('-').unwrap();
+        let from: u64 = from.parse().unwrap();
+        assert!(from >= bad.0 - overlap, "{range}");
+        if let Ok(to) = to.parse::<u64>() {
+            assert!(to < bad.1, "{range}");
+        }
+    }
+}
+
+/// #1661: the server's file changed since (another of the same size, dated later): its
+/// `If-Range` no longer holds, the server sends the whole other file, and the resume fails, the
+/// file on disk left as it was: never a file made of two versions. Without the date (a server
+/// that sends none), the overlap check's bytes before the damaged range catch it the same way.
+#[tokio::test]
+async fn a_damaged_range_is_never_taken_from_another_version() {
+    for dated in [true, false] {
+        changed_on_the_server(dated).await;
+    }
+}
+
+async fn changed_on_the_server(dated: bool) {
+    let mut data = vec![0; 2 << 20];
+    content::fill(22, 0, &mut data);
+    let at = 1_500_000;
+    let (s, served, _dir, path, kept) = garbled_download(&data, at).await;
+    let got = std::fs::read(&path).unwrap();
+    let mut kept = (*kept).clone();
+    if !dated {
+        kept.validators = Default::default();
+    }
+    mdm_engine::repair::reopen(&kept, &[(at, at + 64)], None).unwrap();
+    let mut other = vec![0; 2 << 20];
+    content::fill(23, 0, &mut other);
+    let file = served.path().join("a.zip");
+    std::fs::write(&file, &other).unwrap();
+    // A day later: HTTP dates are to the second.
+    let later = std::time::SystemTime::now() + std::time::Duration::from_secs(86_400);
+    std::fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_modified(later)
+        .unwrap();
+    tokio::time::timeout(SETTLE, s.settled()).await.unwrap();
+    s.clear_log();
+    let state = mdm_engine::state::state_path(&path);
+    let r = Download::resume(state.clone(), Default::default(), fast_opts())
+        .unwrap()
+        .wait()
+        .await;
+    assert!(
+        matches!(r, Err(mdm_engine::Error::FileChanged)),
+        "{:?}",
+        r.map(|o| o.path)
+    );
+    let part = mdm_engine::naming::part_path(&path);
+    assert!(
+        std::fs::read(&part).unwrap() == got,
+        "nothing of the other file in it"
+    );
+    assert!(state.exists(), "kept, as any stopped download's");
+    tokio::time::timeout(SETTLE, s.settled()).await.unwrap();
+    if dated {
+        // The server said so: the whole other file, not the range.
+        assert!(
+            s.log()
+                .iter()
+                .any(|e| e.if_range.is_some() && e.status == 200)
+        );
+    }
 }

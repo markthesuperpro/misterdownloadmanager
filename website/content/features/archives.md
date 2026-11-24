@@ -29,7 +29,17 @@ archives, and single GZ and XZ files.
 7z and RAR archives need 7-Zip, a free program. MDM uses it when it is installed, for split and
 encrypted archives too. **Options → Archives** says whether it was found; when it wasn't, the
 **7-Zip needed** window says so, with a **Get 7-Zip** button. RAR's own extraction code can't be
-part of a free program like MDM, which is why it asks 7-Zip.
+part of a free program like MDM, which is why it asks 7-Zip. With **Extract in place with
+HatchZip** on (below), HatchZip extracts them instead.
+
+## In place, for a nearly full disk
+
+A 180 GB download that unpacks to 200 GB normally needs 380 GB: the archive and its files at
+once. With [HatchZip](https://hatchzip.dev), a free extractor, installed, tick **Extract in place
+with HatchZip** in **Options → Archives**: the archive shrinks as its files come out, so a little
+over 200 GB is enough. HatchZip checks that everything fits and that the password is right before
+it changes anything. If it stops partway, the files so far stay beside the archive and **Extract**
+continues.
 
 ## Careful with your disk
 
@@ -47,11 +57,15 @@ Recycle Bin (the Trash on macOS and Linux) only if you ask.
 
 In [Link grabber](link-grabber.md), the volumes of one archive form one package. Each package
 has its folder, the archives' password, **Extract when done** (ticked by itself when the package
-holds an archive) and **Delete archives after extracting**. The password is kept in memory only,
-never written to disk.
+holds an archive) and **Delete archives after extracting**. The password is kept in memory only: it
+is tried first when an archive needs one, and is never saved by itself.
 
 ![Link grabber listing the links of a page in packages, with their names, sizes and whether they are online](images/help/link-grabber.webp)
 *Link grabber: untick what you don't want, then Add to queue.*
 
-An encrypted archive without its password opens the **Archive password** window. Hover over the
+An encrypted archive is tried with its package's password and your saved passwords first
+(**Options → Archives → Archive passwords...**, the one that fits moving to the top; a package's
+password the archive needed joins them), and only then opens the **Archive password** window,
+which can remember what you type. 7-Zip gets each password on its input, never on its command
+line. Hover over the
 download in the list to read what happened: how many files were extracted and where, or why not.

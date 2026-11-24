@@ -40,7 +40,14 @@ pub struct CustomCategory {
 static CUSTOM: std::sync::RwLock<Vec<CustomCategory>> = std::sync::RwLock::new(Vec::new());
 
 pub fn set_custom(list: &[CustomCategory]) {
-    *CUSTOM.write().unwrap() = list.to_vec();
+    // The rules' lock first, as `rules` takes it: nobody matches a name against half a change.
+    let mut rules = RULES.write().unwrap();
+    let mut custom = CUSTOM.write().unwrap();
+    if *custom != list {
+        *custom = list.to_vec();
+        *rules = None;
+        CHANGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 pub fn custom(id: u32) -> Option<CustomCategory> {
@@ -69,7 +76,51 @@ pub struct BuiltinEdit {
 static BUILTIN: std::sync::RwLock<Vec<BuiltinEdit>> = std::sync::RwLock::new(Vec::new());
 
 pub fn set_builtin(list: &[BuiltinEdit]) {
-    *BUILTIN.write().unwrap() = list.to_vec();
+    let mut rules = RULES.write().unwrap();
+    let mut builtin = BUILTIN.write().unwrap();
+    if *builtin != list {
+        *builtin = list.to_vec();
+        *rules = None;
+        CHANGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// The file types each category takes, in the order [`Category::of`] tries them: the user's
+/// categories, then the built-in ones not deleted. Worked out from `CUSTOM` and `BUILTIN` once,
+/// and again after they change (`None` until then): `of` runs for each link of a list of
+/// thousands, and listing every category's types again for each name held the window (#1063).
+type Rules = Vec<(Category, Vec<String>)>;
+static RULES: std::sync::RwLock<Option<Rules>> = std::sync::RwLock::new(None);
+
+/// How many times the categories changed (`set_custom`, `set_builtin`): what was worked out
+/// from them (a link's category) is worked out again when this moves.
+static CHANGES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// See [`CHANGES`].
+pub fn categories_changed() -> u64 {
+    CHANGES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// `f` with the rules, worked out first if the categories changed since.
+fn rules<R>(f: impl FnOnce(&Rules) -> R) -> R {
+    if let Some(rules) = RULES.read().unwrap().as_ref() {
+        return f(rules);
+    }
+    let mut rules = RULES.write().unwrap();
+    f(rules.get_or_insert_with(|| {
+        let custom: Vec<Category> = CUSTOM
+            .read()
+            .unwrap()
+            .iter()
+            .map(|c| Category::Custom(c.id))
+            .collect();
+        // A deleted built-in takes no file: its types go to another category, or to General.
+        custom
+            .into_iter()
+            .chain(Category::BUILT_IN.into_iter().filter(|c| !c.deleted()))
+            .map(|c| (c, c.extensions()))
+            .collect()
+    }))
 }
 
 fn builtin(cat: Category) -> Option<BuiltinEdit> {
@@ -91,12 +142,13 @@ fn parse_types(types: &str) -> Vec<String> {
         .collect()
 }
 
-/// Does `ext` (lower case) match a file-type pattern (`mp4`, `r0*`)?
+/// Does `ext` match a file-type pattern (`mp4`, `r0*`), in any case?
 fn type_matches(pattern: &str, ext: &str) -> bool {
-    let pattern = pattern.to_ascii_lowercase();
     match pattern.strip_suffix('*') {
-        Some(prefix) => ext.starts_with(prefix),
-        None => ext == pattern,
+        Some(prefix) => ext
+            .get(..prefix.len())
+            .is_some_and(|start| start.eq_ignore_ascii_case(prefix)),
+        None => ext.eq_ignore_ascii_case(pattern),
     }
 }
 
@@ -257,18 +309,41 @@ impl Category {
 
     /// The category a file name falls into: the user's categories first (that is why they made
     /// one), then IDM's; Torrents only by source, never by name.
+    /// Nothing is listed or copied for a name: the categories' types are worked out once
+    /// ([`RULES`], #1063).
     pub fn of(file_name: &str) -> Category {
         let Some((_, ext)) = file_name.rsplit_once('.') else {
             return Category::General;
         };
+        rules(|rules| {
+            rules
+                .iter()
+                .find(|(_, types)| types.iter().any(|p| type_matches(p, ext)))
+                .map_or(Category::General, |(c, _)| *c)
+        })
+    }
+
+    /// [`Self::of`] as it was before #1063 (every category's types listed again for each
+    /// name), for the tests that show both give the same answers.
+    #[cfg(test)]
+    pub fn of_as_before(file_name: &str) -> Category {
+        let Some((_, ext)) = file_name.rsplit_once('.') else {
+            return Category::General;
+        };
         let ext = ext.to_ascii_lowercase();
+        let type_matches = |pattern: &str, ext: &str| {
+            let pattern = pattern.to_ascii_lowercase();
+            match pattern.strip_suffix('*') {
+                Some(prefix) => ext.starts_with(prefix),
+                None => ext == pattern,
+            }
+        };
         let custom: Vec<Category> = CUSTOM
             .read()
             .unwrap()
             .iter()
             .map(|c| Category::Custom(c.id))
             .collect();
-        // A deleted built-in takes no file: its types go to another category, or to General.
         custom
             .into_iter()
             .chain(Category::BUILT_IN.into_iter().filter(|c| !c.deleted()))
@@ -388,6 +463,10 @@ pub struct Item {
     /// added before the column existed have none.
     #[serde(default)]
     pub added: Option<String>,
+    /// When it last finished (the preview pane's "Finished", #1368), as `added` is written.
+    /// Downloads finished before it was kept have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished: Option<String>,
     /// Its own speed limit, bytes/s (progress window → Speed Limiter, "Remember Speed Limiter
     /// settings for this file on download stop/resume"): used again whenever it starts.
     #[serde(default)]
@@ -413,9 +492,24 @@ pub struct Item {
     /// Its name was given without waiting for its folder to be looked at (Download File Info:
     /// a sleeping drive or a network folder can take seconds to answer, #743): nothing of its
     /// own is on the disk yet, and it starts under that name or the next free numbered one, as
-    /// the engine finds as it starts (`Destination::Free`). Cleared once the file is made.
+    /// the engine finds as it starts (`Destination::Free`). Cleared once the file is made. A
+    /// video's (Download video's name, given before its folder was read) is numbered on past the
+    /// files there beside the window, before it starts (videoplace.rs); cleared then.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub number_at_start: bool,
+    /// The file the user chose to replace with this download (#1088: Download File Info's Save
+    /// dialog asked "Replace?" and was answered Yes). While the download's place is that file
+    /// ([`Item::replaces`]), the engine replaces it as the download completes, never before
+    /// (`Options::replace_existing`): one that fails or is cancelled leaves it as it was. Cleared
+    /// once complete.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replace_file: Option<PathBuf>,
+    /// The file it was to replace as it completed (`replace_file`: a Redownload, #1698, or
+    /// #1088's Replace?) that couldn't be replaced (another program had it open): it is kept,
+    /// and the new copy saved beside it, numbered (the row follows the new copy). Set as the
+    /// download completes, taken by the window, which says so. Memory only.
+    #[serde(skip)]
+    pub not_replaced: Option<PathBuf>,
     /// The Link grabber package it came in (#37): its archives are extracted together once
     /// every volume is there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -455,6 +549,25 @@ pub struct Item {
     /// own copy is `context.referer`; this one follows it (`set_referer`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub referer: Option<String>,
+    /// The web page it was started from in the browser, whole (#607), where its Referer is
+    /// often the site's address only. Refresh download address opens it; kept with the list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page: Option<String>,
+    /// It waits for a new address, as IDM's downloads do after Refresh download address: its last
+    /// run stopped because its address no longer gives the file (a signed link expired, 403, 404,
+    /// 410: the engine's `Error::wants_new_address`), or the user chose Refresh download address.
+    /// The browser's next download of the same file (`crate::freshlink`) gives it its address and
+    /// it goes on, instead of a new row starting over. Kept with the list (a link that expired
+    /// overnight is renewed the next day); cleared as it starts again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub waits_for_address: bool,
+    /// It was made from a private (incognito) window's download. Saved (with Options → General →
+    /// "Keep private-window downloads in the list"), unlike `context.private`, which is memory
+    /// only: read back, the row stays apart from normal windows' downloads (it neither takes
+    /// nor gives a fresh address, `crate::freshlink`), never starts waiting by itself, and a
+    /// video never falls back to the normal browser's cookie store.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub private_window: bool,
     /// A video's (its `url` is the page): the address its file came from, the first stream of
     /// its last run as yt-dlp gave it to MDM's engine (#795). The windows' "Address".
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -481,24 +594,59 @@ pub struct Item {
     /// (taken then); memory only, never written (its links are signed).
     #[serde(skip)]
     pub preloaded: Option<mdm_tools::video::Preloaded>,
-    /// Finished video / subtitle / gallery paths waiting to be marked as downloaded from the
-    /// web once any deferred rename in `App::poll` has moved them to their final names.
+    /// A finished video's subtitles saved beside it (#68): a rename on completion takes them
+    /// along (#655). Memory only.
     #[serde(skip)]
-    pub(crate) pending_mark: Option<PendingMark>,
+    pub(crate) side_files: Vec<PathBuf>,
     /// Files known to belong to a finished gallery or debrid folder download, kept across
     /// restarts so a requeued or resumed folder rename still checks for untracked files.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) written_files: Option<Vec<PathBuf>>,
+    /// Whether its resume state is at its place, as read beside the window at start
+    /// (resumeread.rs): the place read and the answer. Until that read comes it is taken as there
+    /// (the safe side: the row keeps its place, and no other row takes it), and it is forgotten as
+    /// the row starts (its run makes or removes the state). Memory only.
+    #[serde(skip)]
+    pub(crate) state_here: Option<(PathBuf, bool)>,
+    /// A copy ([`Item::place_copy`]) of a row that was running: it holds its place as the row
+    /// does ([`Item::holds_place`]). Memory only.
+    #[serde(skip)]
+    pub(crate) live_copy: bool,
+    /// Its archive is being tested before the download counts as done (#1661, archtest.rs):
+    /// queued or running; the row says "Checking..." and its queue takes it as running. Saved:
+    /// a test MDM's closing stopped runs again at the next start.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub testing: bool,
+    /// While its test runs: how far it is, in thousandths (its thread counts). Memory only.
+    #[serde(skip)]
+    pub(crate) test_progress: Option<std::sync::Arc<std::sync::atomic::AtomicU32>>,
+    /// Its archive's last test found it damaged (#1661): the row says "Damaged" until it is
+    /// downloaded again or a test finds it whole.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub damaged: bool,
+    /// Its archive's damaged parts were just downloaded again (#1661): the test that follows is
+    /// the last, never a second re-fetch. Memory only.
+    #[serde(skip)]
+    pub(crate) refetched: bool,
+    /// Its part file and resume state are being moved from this place to `dest` (#1739): set,
+    /// and the list saved with it, before a file moves; cleared once the move is done or undone.
+    /// Found at start (MDM ended during a move), the files tell where it is
+    /// (`relocate::settle`). Meanwhile it doesn't start, and the row says "Moving...".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub move_from: Option<PathBuf>,
 }
 
-/// Files saved by `yt-dlp` or `gallery-dl` waiting for Mark-of-the-Web after deferred rename.
-#[derive(Clone, Debug)]
-pub(crate) struct PendingMark {
-    pub main_file: Option<PathBuf>,
-    pub side_files: Vec<PathBuf>,
-    pub gallery_files: Vec<PathBuf>,
-    pub url: String,
-    pub referer: Option<String>,
+/// Adds `more` to a download's `written_files`, each path once, in order. A gallery lists up to
+/// 100 000 files: each told from those listed at once, not searched for among them (time
+/// squared, on the window's thread).
+fn add_written(list: &mut Vec<PathBuf>, more: Vec<PathBuf>) {
+    let mut listed: std::collections::HashSet<PathBuf> = list.iter().cloned().collect();
+    for p in more {
+        if !listed.contains(&p) {
+            listed.insert(p.clone());
+            list.push(p);
+        }
+    }
 }
 
 /// A Link grabber package, as each of its downloads keeps it (#37).
@@ -543,6 +691,13 @@ pub struct RemoteSpec {
     pub transfer: Option<String>,
     /// The folder its files go into (a torrent of several files gets its own folder there).
     pub folder: PathBuf,
+    /// Custom file or folder name chosen in Add torrent (#517), when renamed from the torrent's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub renamed: Option<String>,
+    /// The files ticked in Add torrent, by their path in the torrent (`/`-separated); the
+    /// service downloads only those. None (and lists saved before it): all of them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files: Option<Vec<String>>,
 }
 
 /// A gallery download's choice (#58).
@@ -551,6 +706,63 @@ pub struct GallerySpec {
     /// At most this many files (the first the site lists, on most the newest); none: all.
     #[serde(default)]
     pub limit: Option<u64>,
+}
+
+/// Why a video failed when joining its picture and sound did (ffmpeg's `error`, in English),
+/// and what became of what was downloaded: `kept` beside its file, for Resume to join again
+/// without downloading it, until the download is deleted with its files.
+fn merge_failure(error: &str, kept: &[PathBuf]) -> String {
+    let error = crate::i18n::ltr(error);
+    if kept.is_empty() {
+        return crate::i18n::fmt(
+            // i18n: why a video download failed: ffmpeg couldn't join its picture and sound into one file; {error} = ffmpeg's reason, in English
+            crate::i18n::t("its picture and sound couldn't be joined into one file ({error})"),
+            &[("error", &error)],
+        );
+    }
+    let files = kept
+        .iter()
+        .filter_map(|f| f.file_name())
+        .map(|n| crate::i18n::isolate(&n.to_string_lossy()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    crate::i18n::fmt(
+        // i18n: why a video download failed: ffmpeg couldn't join its picture and sound into one file; {error} = ffmpeg's reason, in English; {files} = the downloaded parts' file names, kept in the download folder; "Also delete the file from disk" is the Delete box's choice
+        crate::i18n::t(
+            "its picture and sound couldn't be joined into one file ({error}). What was downloaded stays in the folder for Resume to join again ({files}); deleting the download with \"Also delete the file from disk\" removes it",
+        ),
+        &[("error", &error), ("files", &files)],
+    )
+}
+
+/// `text` with every web address in it cut before its query and fragment (`?…`, `#…`): what a
+/// log may keep of a download's failure (#1262), since a log is attached to reports and an
+/// address's query often carries a token.
+fn without_queries(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = ["https://", "http://"]
+        .iter()
+        .filter_map(|p| rest.find(p))
+        .min()
+    {
+        out.push_str(&rest[..at]);
+        let addr = &rest[at..];
+        let end = addr
+            .find(|c: char| c.is_whitespace() || matches!(c, ')' | '"' | '\'' | '>' | ']'))
+            .unwrap_or(addr.len());
+        let (url, after) = addr.split_at(end);
+        match url.find(['?', '#']) {
+            Some(q) => {
+                out.push_str(&url[..q]);
+                out.push_str("?…");
+            }
+            None => out.push_str(url),
+        }
+        rest = after;
+    }
+    out.push_str(rest);
+    out
 }
 
 /// A helper's progress (yt-dlp's, gallery-dl's) as the engine's view: one segment when its size
@@ -565,16 +777,33 @@ fn tool_snapshot(p: mdm_tools::video::Progress, url: &Url) -> mdm_engine::Snapsh
         V::Running if p.merging.is_some() => (State::Merging, None, None),
         V::Running => (State::Downloading, None, None),
         V::Done(f) => (State::Done, Some(f), None),
-        V::Failed(e) => (State::Failed, None, Some(e)),
+        V::Failed(e) => (
+            State::Failed,
+            None,
+            Some(match &p.merge_failed {
+                Some(kept) => merge_failure(&e, kept),
+                // A path yt-dlp couldn't make, too long for the system (#1102): said as such,
+                // not as Python's "No such file or directory".
+                None => match mdm_tools::video::too_long(&e) {
+                    Some(path) => crate::errors::describe(&mdm_engine::Error::PathTooLong(path)),
+                    None => e,
+                },
+            }),
+        ),
         V::Stopped => (State::Cancelled, None, None),
     };
     let size = p.total;
+    // A live stream yt-dlp records says no progress: what it has recorded is what's downloaded,
+    // so Downloaded and the rate (from its growth) follow the recording.
+    let downloaded = p.downloaded.max(p.recorded);
     // Downloaded by the helper itself (a live stream, RTMP; looking the page up): its one
-    // connection, not an empty list (#793).
+    // connection, not an empty list (#793); receiving once a live stream's recorder has opened
+    // its file (it is connected: `recording`, its file still 0 bytes until its first block) or
+    // its recording grows, though yt-dlp gives it no speed.
     let own = (p.engine.is_none() && state == State::Downloading).then(|| ConnView {
         id: 0,
-        downloaded: p.downloaded,
-        status: if p.speed > 0.0 {
+        downloaded,
+        status: if p.speed > 0.0 || p.recorded > 0 || p.recording {
             ConnStatus::Receiving
         } else {
             ConnStatus::Connecting
@@ -586,7 +815,7 @@ fn tool_snapshot(p: mdm_tools::video::Progress, url: &Url) -> mdm_engine::Snapsh
         size.map(|t| {
             vec![mdm_engine::download::SegmentView {
                 start: 0,
-                cursor: p.downloaded.min(t),
+                cursor: downloaded.min(t),
                 end: t,
             }]
         })
@@ -601,7 +830,7 @@ fn tool_snapshot(p: mdm_tools::video::Progress, url: &Url) -> mdm_engine::Snapsh
         url: engine.address.clone().unwrap_or_else(|| url.clone()),
         file,
         size,
-        downloaded: p.downloaded,
+        downloaded,
         resumable: Some(true),
         segments,
         connections: own.into_iter().chain(engine.connections).collect(),
@@ -622,6 +851,7 @@ fn tool_snapshot(p: mdm_tools::video::Progress, url: &Url) -> mdm_engine::Snapsh
         server: engine.server,
         at_service: None,
         finishing: p.merging.flatten(),
+        kept: None,
     }
 }
 
@@ -644,6 +874,23 @@ impl Job {
             Job::Gallery { job, .. } => job.stop(),
             Job::Torrent(t) => t.cancel(),
             Job::Remote(r) => r.cancel(),
+        }
+    }
+
+    /// Stop and save: a live stream yt-dlp records is stopped and what it recorded kept
+    /// as a video, the download then done; anything else is cancelled as [`Job::cancel`] does.
+    pub fn save(&self) {
+        match self {
+            Job::Video { job, .. } => job.save(),
+            _ => self.cancel(),
+        }
+    }
+
+    /// A live stream's download: recording, being saved, or neither (`None`: every other job).
+    pub fn live_state(&self) -> Option<mdm_tools::video::LiveState> {
+        match self {
+            Job::Video { job, .. } => job.live_state(),
+            _ => None,
         }
     }
 
@@ -677,7 +924,7 @@ impl Job {
             Job::Torrent(t) => t.speed_limit(),
             Job::Video { job, .. } => job.speed_limit(),
             Job::Gallery { job, .. } => job.speed_limit(),
-            Job::Remote(_) => None,
+            Job::Remote(r) => r.speed_limit(),
         }
     }
 }
@@ -719,13 +966,31 @@ pub struct VideoSpec {
     /// The subtitles saved with it (#68; none in a list saved before them).
     #[serde(default)]
     pub subs: mdm_tools::video::Subs,
+    /// What its last run kept beside its file when joining its streams failed, for Resume
+    /// (`mdm_tools::video::Progress::merge_failed`): deleting it with its files removes them,
+    /// whatever yt-dlp named them (`Talk.faud-English.mp4`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<PathBuf>,
+    /// The user typed its file name (#1102): kept as typed, never shortened to fit the path
+    /// limits; one too long for its folder says so when it starts. A name MDM gave (the page's
+    /// title) is shortened instead.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub named: bool,
+    /// The video's length (whole seconds) as its look-up said: the same video picked again on
+    /// its page is known by it when its stream's address is signed in its path for each load
+    /// (`same_video`). None in a list saved before it, for a live stream or a length not said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration: Option<u32>,
+    /// Only this part of it (#1662): its times and its cut; none for the whole video (and in a
+    /// list saved before parts).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub part: Option<mdm_tools::part::Part>,
 }
 
 /// A running download and its speed measurement.
 pub struct Live {
     pub dl: Job,
-    pub rate: f64,
-    sample: (Instant, u64),
+    pub speed: Speed,
     /// The engine's last event already copied into the item's log.
     seen: u64,
     /// A video's first stream address of this run is in `Item::file_url` (#795).
@@ -738,9 +1003,143 @@ impl Live {
             dl,
             seen: 0,
             addressed: false,
-            rate: 0.0,
-            sample: (Instant::now(), downloaded),
+            speed: Speed::new(Instant::now(), downloaded),
         }
+    }
+}
+
+/// How long the speed shown takes to settle on a new pace (seconds): its average follows the
+/// bytes with this time constant (#1176), about two thirds of the way in 3 s.
+pub const SPEED_TAU: f64 = 3.0;
+/// The same for the global limiter's split between files and torrents (app.rs).
+pub const SPLIT_TAU: f64 = 2.0;
+/// How often the speed shown changes (seconds), with its time left: every download's on the
+/// same clock, so the list's rows and the total beside them change together (#1176).
+pub const SHOWN_EVERY: f64 = 0.5;
+/// No byte for this long (seconds): the speed is 0, not what is left of the average.
+const STILL: f64 = 5.0;
+
+/// `avg` (bytes a second) after `bytes` came in `dt` seconds: an exponential average whose
+/// weight is the time that passed (1 − e^(−dt/τ), `tau` seconds), so it is the same whatever
+/// the frame rate that reads the bytes.
+pub fn average(avg: f64, bytes: u64, dt: f64, tau: f64) -> f64 {
+    if dt <= 0.0 {
+        return avg;
+    }
+    let k = 1.0 - (-dt / tau).exp();
+    avg + (bytes as f64 / dt - avg) * k
+}
+
+/// The clock the shown speeds change on ([`SHOWN_EVERY`]).
+fn shown_epoch() -> Instant {
+    static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    *EPOCH.get_or_init(Instant::now)
+}
+
+/// The tick of the shown speeds' clock that `now` is in.
+fn shown_tick(now: Instant) -> u64 {
+    (now.saturating_duration_since(shown_epoch()).as_secs_f64() / SHOWN_EVERY) as u64
+}
+
+/// How long from `now` to the next change of the shown speeds, a few milliseconds past it so the
+/// frame lands in the new tick.
+pub fn until_shown(now: Instant) -> std::time::Duration {
+    let t = now.saturating_duration_since(shown_epoch()).as_secs_f64();
+    let next = ((t / SHOWN_EVERY).floor() + 1.0) * SHOWN_EVERY;
+    std::time::Duration::from_secs_f64(next - t + 0.005)
+}
+
+/// A download's speed (#1176): an average of the bytes over time ([`average`]), whatever the
+/// frames that read them, and the figure shown from it, which changes on a steady clock
+/// ([`SHOWN_EVERY`]) so its digits can be read. The time left goes with the figure shown.
+#[derive(Clone, Debug)]
+pub struct Speed {
+    /// The average (bytes a second) and how much of it is measured (0 to 1): until the
+    /// average has had a few seconds, it is the bytes over the time measured, not pulled
+    /// towards the 0 it began at.
+    avg: f64,
+    weight: f64,
+    /// The bytes last read and when.
+    last: (Instant, u64),
+    /// When a byte last came.
+    moved: Instant,
+    /// The figures shown: the speed, the bytes done when it was read, and its tick.
+    shown: f64,
+    shown_done: u64,
+    tick: Option<u64>,
+}
+
+impl Speed {
+    pub fn new(now: Instant, done: u64) -> Self {
+        Speed {
+            avg: 0.0,
+            weight: 0.0,
+            last: (now, done),
+            moved: now,
+            shown: 0.0,
+            shown_done: done,
+            tick: None,
+        }
+    }
+
+    /// The average now (bytes a second).
+    pub fn average(&self) -> f64 {
+        if self.weight > 0.0 {
+            self.avg / self.weight
+        } else {
+            0.0
+        }
+    }
+
+    /// The bytes done read at `now`.
+    pub fn read(&mut self, now: Instant, done: u64) {
+        let (at, before) = self.last;
+        let dt = now.saturating_duration_since(at).as_secs_f64();
+        if done < before {
+            // Fewer bytes than read before: bytes a dropped connection had counted, a video's
+            // next stream, a file started over. The average goes on from here (it says how
+            // fast the bytes come); a fresh one over a moment would jump.
+            self.last = (now, done);
+        } else if self.weight == 0.0 && done == before {
+            // Nothing yet: the wait for the first byte isn't averaged in.
+            self.last = (now, done);
+            self.moved = now;
+        } else if dt > 0.0 {
+            let k = 1.0 - (-dt / SPEED_TAU).exp();
+            self.avg = average(self.avg, done - before, dt, SPEED_TAU);
+            self.weight += (1.0 - self.weight) * k;
+            self.last = (now, done);
+            if done > before {
+                self.moved = now;
+            } else if now.saturating_duration_since(self.moved).as_secs_f64() >= STILL {
+                self.avg = 0.0;
+            }
+        }
+        let tick = shown_tick(now);
+        if self.tick != Some(tick) {
+            self.tick = Some(tick);
+            self.shown = self.average();
+            self.shown_done = self.last.1;
+        }
+    }
+
+    /// Every byte is in (#736): no speed any more, at once; measured afresh from `done`.
+    pub fn clear(&mut self, now: Instant, done: u64) {
+        *self = Speed {
+            tick: self.tick,
+            ..Speed::new(now, done)
+        };
+    }
+
+    /// The speed shown (bytes a second).
+    pub fn shown(&self) -> f64 {
+        self.shown
+    }
+
+    /// The time left (seconds) to `size` at the speed shown, from the bytes done when it was
+    /// read; None without a speed.
+    pub fn seconds_left(&self, size: u64) -> Option<f64> {
+        (self.shown > 1.0).then(|| size.saturating_sub(self.shown_done) as f64 / self.shown)
     }
 }
 
@@ -769,7 +1168,48 @@ fn size_after(
     }
 }
 
+/// A private (incognito) window's download in the list (#1581, [`Item::private_mark`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrivateMark {
+    /// Saved in the list: still there after MDM restarts.
+    Kept,
+    /// In memory only: gone when MDM closes.
+    MemoryOnly,
+}
+
+impl PrivateMark {
+    /// What the mark's tip says (and a screen reader, of the row).
+    pub fn tip(self) -> &'static str {
+        match self {
+            // i18n: tooltip of the mark (a mask) before a download's status in the list: it came from a browser's private (incognito) window, and MDM's list keeps it after a restart (Options → General → Keep private-window downloads in the list)
+            PrivateMark::Kept => crate::i18n::t("From a private window: kept in the list"),
+            // i18n: tooltip of the mark (a mask) before a download's status in the list: it came from a browser's private (incognito) window, and it is in memory only, gone from the list when MDM closes
+            PrivateMark::MemoryOnly => crate::i18n::t(
+                "From a private window: in memory only, gone from the list when MDM closes",
+            ),
+        }
+    }
+}
+
 impl Item {
+    /// Made from a private window's download, in this session or one before it.
+    pub fn is_private_window(&self) -> bool {
+        self.private_window || self.context.private
+    }
+
+    /// The list's mark for a private window's download (#1581), with whether the list keeps it:
+    /// one read back from an earlier session is saved already; one of this session is saved
+    /// while Options → General → "Keep private-window downloads in the list" (`keep`) is on.
+    pub fn private_mark(&self, keep: bool) -> Option<PrivateMark> {
+        if !self.is_private_window() {
+            None
+        } else if keep || !self.context.private {
+            Some(PrivateMark::Kept)
+        } else {
+            Some(PrivateMark::MemoryOnly)
+        }
+    }
+
     /// Add an app-side event (added, started, stopped …) to the log.
     pub fn note(&mut self, text: impl Into<String>) {
         let now = std::time::SystemTime::now()
@@ -797,6 +1237,27 @@ impl Item {
             .join("\n")
     }
 
+    /// The file at its place is the one the user chose to replace (`replace_file`): the engine
+    /// replaces it as the download completes. Its place moved since (renamed, numbered): no.
+    pub fn replaces(&self) -> bool {
+        self.replace_file.as_ref() == Some(&self.dest)
+    }
+
+    /// Can it be downloaded again from the start (Redownload)? A file download that isn't
+    /// running. Not a torrent (its pieces are checked against their hashes: Recheck files finds
+    /// and fetches the damaged ones, and its data keeps seeding), a video (its file is yt-dlp's to
+    /// make), a gallery (gallery-dl fetches only the files not there yet: Download Now does
+    /// that), nor a torrent through a debrid account (the service's files, #44). Nor one whose
+    /// unfinished file is being moved (`move_from`, #1739): its part file is on its way.
+    pub fn can_redownload(&self) -> bool {
+        self.live.is_none()
+            && self.move_from.is_none()
+            && self.torrent.is_none()
+            && self.video.is_none()
+            && self.gallery.is_none()
+            && self.remote.is_none()
+    }
+
     /// What tells where this row's files are (its place, its kind, the files it wrote), for a
     /// look at the disk on a thread other than the window's (#743): no live download, no log.
     pub fn place_copy(&self) -> Item {
@@ -810,6 +1271,9 @@ impl Item {
         c.remote.clone_from(&self.remote);
         c.preexisting_folder = self.preexisting_folder;
         c.written_files.clone_from(&self.written_files);
+        c.number_at_start = self.number_at_start;
+        c.state_here.clone_from(&self.state_here);
+        c.live_copy = self.live.is_some() || self.live_copy;
         c
     }
 
@@ -833,6 +1297,7 @@ impl Item {
             resumable: None,
             checksum: None,
             added: Some(now_stamp()),
+            finished: None,
             own_limit: None,
             video: None,
             torrent: None,
@@ -840,6 +1305,8 @@ impl Item {
             log: Vec::new(),
             name_from_url: false,
             number_at_start: false,
+            replace_file: None,
+            not_replaced: None,
             package: None,
             group: None,
             server: None,
@@ -849,6 +1316,9 @@ impl Item {
             preexisting_folder: false,
             moved_away: false,
             referer: None,
+            page: None,
+            waits_for_address: false,
+            private_window: false,
             file_url: None,
             live: None,
             torrent_check: None,
@@ -857,13 +1327,75 @@ impl Item {
             context: Default::default(),
             notices: Vec::new(),
             preloaded: None,
-            pending_mark: None,
+            side_files: Vec::new(),
             written_files: None,
+            state_here: None,
+            live_copy: false,
+            testing: false,
+            test_progress: None,
+            damaged: false,
+            refetched: false,
+            move_from: None,
         }
     }
+
+    /// A download of MDM's own engine (not a video, a gallery or a torrent, whose helper or
+    /// session keeps its unfinished files): its part file and resume state are all it has on
+    /// the disk before it is finished.
+    pub fn engine_file(&self) -> bool {
+        self.video.is_none()
+            && self.gallery.is_none()
+            && self.torrent.is_none()
+            && self.remote.is_none()
+    }
+
+    /// Why Move/Rename (and File Properties → Move) can't take this download now, as a text
+    /// marked for translation; None when it can (#1739): a finished download, one not started,
+    /// or one of MDM's own engine stopped part-way (its part file and resume state go along, and
+    /// it resumes from where it was). The same answer greys the commands and says why.
+    pub fn move_refused(&self) -> Option<&'static str> {
+        if self.live.is_some() {
+            // i18n: tooltip of the greyed Move button in File Properties
+            return Some(crate::i18n::mark("Pause the download first"));
+        }
+        if self.move_from.is_some() {
+            // i18n: why a download can't be moved or renamed now: it is being moved already
+            return Some(crate::i18n::mark("The download is being moved"));
+        }
+        if self
+            .torrent
+            .as_ref()
+            .is_some_and(|t| t.shares_folder(&self.dest))
+        {
+            // i18n: shown when Move or Rename is refused: a torrent saved straight in Save to shares that folder with other files
+            return Some(crate::i18n::mark(
+                "This torrent shares its destination folder",
+            ));
+        }
+        if self.status == Status::Complete || self.downloaded == 0 || self.engine_file() {
+            return None;
+        }
+        Some(if self.torrent.is_some() || self.remote.is_some() {
+            // i18n: why a torrent that isn't finished can't be moved or renamed: the torrent engine writes its pieces into the files where they are
+            crate::i18n::mark(
+                "A torrent can be moved once it's finished: until then the torrent engine writes its pieces where they are",
+            )
+        } else {
+            // i18n: why a video or an image gallery that isn't finished can't be moved or renamed: yt-dlp, ffmpeg or gallery-dl keep their unfinished files in its folder
+            crate::i18n::mark(
+                "A video or a gallery can be moved once it's finished: until then its helper programs keep their unfinished files in its folder",
+            )
+        })
+    }
     /// This row's resume state is at its place. `downloaded` can't say: after a crash the list
-    /// holds what it held at its last save, often nothing.
+    /// holds what it held at its last save, often nothing. As read beside the window at start
+    /// while that holds (`state_here`), else from the disk.
     pub fn owns_resume_state(&self) -> bool {
+        if let Some((at, here)) = &self.state_here
+            && *at == self.dest
+        {
+            return *here;
+        }
         let state = mdm_engine::state::state_path(&self.dest);
         mdm_engine::state::ResumeState::load(&state).is_ok_and(|s| s.url == self.url)
     }
@@ -873,6 +1405,7 @@ impl Item {
     /// nothing: several may wait under one name, and the first to start keeps it.
     pub fn holds_place(&self) -> bool {
         self.live.is_some()
+            || self.live_copy
             || if self.status == Status::Complete {
                 self.dest.exists()
             } else {
@@ -885,6 +1418,11 @@ impl Item {
         let Some(live) = &mut self.live else {
             return false;
         };
+        // Before the snapshot, not after: a live stream recording or being saved as this is read
+        // can only show, in the snapshot taken next, more recorded, 0 (its run over, being
+        // saved) or its file's size (saved). Read after, a save begun or ended in between would
+        // show 0 for one look, unheld, and its file's size counted again by the download limit.
+        let live_now = live.dl.live_state();
         let s = live.dl.snapshot();
         // The service's id for a torrent sent to it (#44), kept to continue after a restart.
         if let (Job::Remote(r), Some(spec)) = (&live.dl, self.remote.as_mut())
@@ -900,7 +1438,7 @@ impl Item {
             live.addressed = true;
             self.file_url = Some(s.url.clone());
         }
-        self.downloaded = s.downloaded;
+        self.downloaded = shown_downloaded(live_now, s.downloaded, self.downloaded);
         self.size = size_after(s.state, s.size, s.downloaded, self.size);
         self.resumable = s.resumable.or(self.resumable);
         if let Some(f) = &s.file {
@@ -908,6 +1446,13 @@ impl Item {
             let guessed = std::mem::take(&mut self.name_from_url);
             self.number_at_start = false;
             if *f != self.dest {
+                // It was to replace the file at its place as it completed, and the engine saved
+                // it beside instead: that file couldn't be replaced (open in another program),
+                // and both stay (#1698).
+                // (`Item::replaces`, by its fields: `live` is borrowed.)
+                if s.state == State::Done && self.replace_file.as_ref() == Some(&self.dest) {
+                    self.not_replaced = Some(self.dest.clone());
+                }
                 // The file as saved (a video's real extension, a numbered duplicate, the name
                 // the server gave).
                 self.dest = f.clone();
@@ -921,15 +1466,12 @@ impl Item {
                 }
             }
         }
-        let dt = live.sample.0.elapsed().as_secs_f64();
-        if dt >= 0.5 {
-            let inst = s.downloaded.saturating_sub(live.sample.1) as f64 / dt;
-            live.rate = if live.rate == 0.0 {
-                inst
-            } else {
-                0.6 * live.rate + 0.4 * inst
-            };
-            live.sample = (Instant::now(), s.downloaded);
+        if self.torrent.is_none() && every_byte_in(&s) {
+            // Every byte in (#736): nothing comes in while the last of it is written out, the
+            // file checked, joined or named; the rate the download ended on isn't one any more.
+            live.speed.clear(Instant::now(), self.downloaded);
+        } else {
+            live.speed.read(Instant::now(), self.downloaded);
         }
         let seen = live.seen;
         for e in s.events.iter().filter(|e| e.seq > seen) {
@@ -947,68 +1489,108 @@ impl Item {
             | State::Merging
             | State::Completing => None,
             State::Done => Some(Status::Complete),
-            State::Cancelled => Some(Status::Stopped),
+            // Stopped, its last bytes and state still being written (#1328): stopped for the
+            // list now; a start at its place waits for them in the engine.
+            State::Stopping | State::Cancelled => Some(Status::Stopped),
             State::Failed => Some(Status::Error),
         };
         match ended {
             Some(status) => {
+                let failed_now = status == Status::Error && self.status != Status::Error;
+                // The reason in English, for the log: the engine's failure, else the helper's.
+                let reason = failed_now.then(|| {
+                    s.failure
+                        .as_ref()
+                        .map(ToString::to_string)
+                        .or_else(|| s.error.clone())
+                        .map_or_else(|| "no reason given".to_owned(), |r| without_queries(&r))
+                });
                 self.status = status;
+                // A file's address that no longer gives it (expired, refused): it waits for a
+                // fresh one, which the browser's next download of the file gives it.
+                if failed_now
+                    && self.video.is_none()
+                    && !self.is_private_window()
+                    && crate::freshlink::expiring_site(&self.url)
+                    && s.failure
+                        .as_ref()
+                        .is_some_and(mdm_engine::Error::wants_new_address)
+                {
+                    self.waits_for_address = true;
+                }
                 // In the interface language; the engine's English when it gave no failure.
                 self.error = s.failure.as_ref().map(crate::errors::describe).or(s.error);
-                if status == Status::Complete {
-                    self.downloaded = self.size.unwrap_or(self.downloaded);
+                if self.video.is_some()
+                    && self.is_private_window()
+                    && let Some(error) = self
+                        .error
+                        .as_ref()
+                        .and_then(|e| crate::videodlg::private_auth_error(e))
+                {
+                    self.error = Some(error);
                 }
-                // A video and its subtitles (#68), marked as downloaded from the web once
-                // yt-dlp has saved them (and after any deferred rename in `App::poll`).
+                // Why it failed, in the log too, once (#1262: 0.5.2's log said nothing of a
+                // video yt-dlp couldn't download, only the progress window did). The site's
+                // name, not its address: a log is attached to reports, and addresses carry
+                // tokens.
+                if let Some(reason) = reason {
+                    tracing::warn!(
+                        "download {} failed ({}{}): {reason}",
+                        self.id,
+                        if self.video.is_some() {
+                            "a video, "
+                        } else {
+                            ""
+                        },
+                        self.url.host_str().unwrap_or("no host"),
+                    );
+                }
+                // A video's streams kept after its merge failed: its own, for Delete.
+                if let Some(Live {
+                    dl: Job::Video { job, .. },
+                    ..
+                }) = &self.live
+                    && let Some(v) = self.video.as_mut()
+                {
+                    v.parts = job.progress().merge_failed.unwrap_or_default();
+                }
+                if status == Status::Complete {
+                    self.finished = Some(now_stamp());
+                    self.downloaded = self.size.unwrap_or(self.downloaded);
+                    // Replaced (or kept, when it couldn't be): the file there now is its own.
+                    self.replace_file = None;
+                }
+                // A video and its subtitles (#68), already marked as downloaded from the web by
+                // its job, before it said it was done (#1103).
                 let mut notices = Vec::new();
                 if status == Status::Complete
                     && let Some(Live {
                         dl: Job::Video { job, url },
                         ..
                     }) = &self.live
-                    && matches!(url.scheme(), "http" | "https")
                 {
                     let done = job.progress();
                     // The subtitles the site wouldn't give: said in the log and the Download
                     // complete window (the video is saved all the same).
-                    let site = url.host_str().unwrap_or("").trim_start_matches("www.");
-                    notices = done
-                        .sub_problems
-                        .iter()
-                        .map(|p| sub_notice(p, site))
-                        .collect();
-                    self.pending_mark = Some(PendingMark {
-                        main_file: s.file.clone(),
-                        side_files: done.side_files,
-                        gallery_files: Vec::new(),
-                        url: url.to_string(),
-                        referer: self.context.referer.clone(),
-                    });
+                    if matches!(url.scheme(), "http" | "https") {
+                        let site = url.host_str().unwrap_or("").trim_start_matches("www.");
+                        notices = done
+                            .sub_problems
+                            .iter()
+                            .map(|p| sub_notice(p, site))
+                            .collect();
+                    }
+                    self.side_files = done.side_files;
                 }
-                // A gallery's files (#58), each marked as downloaded from the web after any
-                // deferred folder rename in `App::poll`.
+                // A gallery's files (#58), already marked by its job as the video's are.
                 if status == Status::Complete
                     && let Some(Live {
-                        dl: Job::Gallery { job, url },
+                        dl: Job::Gallery { job, .. },
                         ..
                     }) = &self.live
                 {
                     let known = job.known_files();
-                    let list = self.written_files.get_or_insert_with(Vec::new);
-                    for p in known {
-                        if !list.contains(&p) {
-                            list.push(p);
-                        }
-                    }
-                    if matches!(url.scheme(), "http" | "https") {
-                        self.pending_mark = Some(PendingMark {
-                            main_file: None,
-                            side_files: Vec::new(),
-                            gallery_files: job.saved(),
-                            url: url.to_string(),
-                            referer: None,
-                        });
-                    }
+                    add_written(self.written_files.get_or_insert_with(Vec::new), known);
                 }
                 if status == Status::Complete
                     && let Some(Live {
@@ -1019,12 +1601,7 @@ impl Item {
                         self.preexisting_folder = true;
                     }
                     let saved = r.saved_files();
-                    let list = self.written_files.get_or_insert_with(Vec::new);
-                    for p in saved {
-                        if !list.contains(&p) {
-                            list.push(p);
-                        }
-                    }
+                    add_written(self.written_files.get_or_insert_with(Vec::new), saved);
                 }
                 for n in &notices {
                     self.note(n.clone());
@@ -1051,6 +1628,25 @@ impl Item {
             })
     }
 
+    /// It failed because the server's answer was no larger than a web page where the browser's
+    /// file was larger than any (#1460): the progress window explains it in full under "Error",
+    /// as a site's page. As its last run ended (this session only).
+    pub fn got_other_answer(&self) -> bool {
+        self.status == Status::Error
+            && self.live.is_none()
+            && self.snap.as_ref().is_some_and(|s| {
+                s.state == State::Failed
+                    && matches!(s.failure, Some(mdm_engine::Error::NotTheFile { .. }))
+            })
+    }
+
+    /// Its last run failed joining a video's streams and kept them for Resume
+    /// ([`VideoSpec::parts`]): the progress window explains it in full under "Error", as a
+    /// site's page (#701).
+    pub fn merge_failed(&self) -> bool {
+        self.status == Status::Error && self.video.as_ref().is_some_and(|v| !v.parts.is_empty())
+    }
+
     /// Where its file comes from, the windows' "Address" (#795): a running video's stream under
     /// way (its page until the engine has one), a stopped or finished one's first stream of its
     /// last run; a file's (and a video's never downloaded) own address.
@@ -1065,16 +1661,22 @@ impl Item {
     }
 
     /// The web page it was obtained from (#795): a video's or a gallery's is its own address
-    /// (the page yt-dlp, gallery-dl look up), a file's the page the browser sent as its referer.
+    /// (the page yt-dlp, gallery-dl look up); a file's the page the browser started it from
+    /// (#607), else the one it sent as its referer (an older extension's, Import's, File
+    /// Properties'). Refresh download address opens it. A site's address alone (a Referer a
+    /// referrer policy cut, `https://host/`) only when none of them names a page on it.
     pub fn web_page(&self) -> Option<&str> {
         if self.video.is_some() || self.gallery.is_some() {
             return Some(self.url.as_str());
         }
-        self.context
-            .referer
-            .as_deref()
-            .or(self.referer.as_deref())
-            .filter(|r| !r.is_empty())
+        let known = [
+            self.page.as_deref(),
+            self.context.referer.as_deref(),
+            self.referer.as_deref(),
+        ];
+        let mut known = known.into_iter().flatten().filter(|r| !r.is_empty());
+        let first = known.clone().next()?;
+        Some(known.find(|r| !site_only(r)).unwrap_or(first))
     }
 
     /// The referer sent with it from now on (the browser's, File Properties'): the request's
@@ -1096,6 +1698,12 @@ impl Item {
         }
     }
 
+    /// A running live stream's download: recording, or its recording being saved
+    /// ([`Job::live_state`]); `None` when nothing runs.
+    pub fn live_state(&self) -> Option<mdm_tools::video::LiveState> {
+        self.live.as_ref().and_then(|l| l.dl.live_state())
+    }
+
     /// Resume / Download Now may start it: not running, and not finished (a gallery finished
     /// may start again: it fetches the files not there yet, #58).
     pub fn can_start(&self) -> bool {
@@ -1106,8 +1714,19 @@ impl Item {
             ) || (self.status == Status::Complete && self.gallery.is_some()))
     }
 
+    /// The speed shown (bytes a second): the list's Transfer rate, the progress window's, the
+    /// total in the status strip and the tray's tip all show this one ([`Speed`]).
     pub fn rate(&self) -> f64 {
-        self.live.as_ref().map_or(0.0, |l| l.rate)
+        self.live.as_ref().map_or(0.0, |l| l.speed.shown())
+    }
+
+    /// The time left (seconds) at the speed shown, while it downloads with a known size.
+    pub fn seconds_left(&self) -> Option<f64> {
+        if self.status != Status::Downloading || self.past_last_byte() {
+            return None;
+        }
+        let size = self.size?;
+        self.live.as_ref()?.speed.seconds_left(size)
     }
 
     /// How much has come, 0 to 1, or None without a size to take a share of (a live stream,
@@ -1168,52 +1787,108 @@ impl Item {
         } else {
             0.0
         };
-        Some(crate::i18n::fmt(
-            // i18n: a torrent's status while its files are read and checked; {percent} is how much is checked, e.g. "42%"
-            crate::i18n::t("Checking {percent}"),
-            &[("percent", &crate::i18n::percent(ratio.min(1.0), 0))],
-        ))
+        Some(checking(&crate::i18n::percent(ratio.min(1.0), 0)))
     }
 
     /// After the last byte, while the file is checked against its checksum or a video's
     /// streams are joined (#736): "Verifying... (45%)", "Merging...", with how far it is when
-    /// that's known. `short`: the list's narrow Status column, "45% verified", the percentage
-    /// first (as "45% at Real-Debrid"); the progress window says it whole.
+    /// that's known. `short`: the list's Status column, one short word and how far, "Checking
+    /// 45%" (as a torrent's check) and "Merging 45%" ("Merging ..." before that is known); the
+    /// column is wide enough for them in the interface language and font ([`crate::list::status_width`]). The
+    /// cell's tip and a screen reader say it whole ([`crate::list::Row::status_whole`]).
     pub fn finishing(&self, short: bool) -> Option<String> {
+        if let Some(testing) = self.archive_testing(short) {
+            return Some(testing);
+        }
         let s = self.snap.as_ref()?;
-        let (plain, with_percent) = match s.state {
-            // i18n: a download's status while the finished file is checked against its checksum
-            State::Verifying => (crate::i18n::t("Verifying..."), {
-                if short {
-                    // i18n: the list's narrow Status column while the finished file is checked against its checksum; {percent} how much is checked, e.g. "45%": keep it first, the column is narrow
-                    crate::i18n::t("{percent} verified")
+        if !matches!(s.state, State::Verifying | State::Merging) {
+            return None;
+        }
+        let percent = s
+            .finishing
+            .map(|f| crate::i18n::percent(f.clamp(0.0, 1.0), 0));
+        let verifying = s.state == State::Verifying;
+        Some(match (short, percent) {
+            // As "... at Real-Debrid" before its service says how far.
+            (true, percent) => {
+                let percent = percent.as_deref().unwrap_or("...");
+                if verifying {
+                    checking(percent)
                 } else {
+                    merging(percent)
+                }
+            }
+            (false, Some(percent)) => crate::i18n::fmt(
+                if verifying {
                     // i18n: a download's status while the finished file is checked against its checksum; {percent} how much is checked, e.g. "45%"
                     crate::i18n::t("Verifying... ({percent})")
-                }
-            }),
-            // i18n: a video's status while its picture and sound are joined into one file (ffmpeg)
-            State::Merging => (crate::i18n::t("Merging..."), {
-                if short {
-                    // i18n: the list's narrow Status column while a video's picture and sound are joined into one file (ffmpeg); {percent} how far, e.g. "45%": keep it first, the column is narrow
-                    crate::i18n::t("{percent} merged")
                 } else {
                     // i18n: a video's status while its picture and sound are joined into one file (ffmpeg); {percent} how far, e.g. "45%"
                     crate::i18n::t("Merging... ({percent})")
-                }
-            }),
-            _ => return None,
-        };
-        Some(match s.finishing {
-            Some(f) => crate::i18n::fmt(
-                with_percent,
-                &[("percent", &crate::i18n::percent(f.clamp(0.0, 1.0), 0))],
+                },
+                &[("percent", &percent)],
             ),
-            None => plain.to_owned(),
+            (false, None) if verifying => {
+                // i18n: a download's status while the finished file is checked against its checksum
+                crate::i18n::t("Verifying...").to_owned()
+            }
+            (false, None) => {
+                // i18n: a video's status while its picture and sound are joined into one file (ffmpeg)
+                crate::i18n::t("Merging...").to_owned()
+            }
         })
     }
 
+    /// While its archive is tested before the download counts as done (#1661): "Checking 45%"
+    /// (`short`, the list's Status column, as a checksum's check) or "Testing the archive...
+    /// (45%)", with how far it is once its test runs.
+    fn archive_testing(&self, short: bool) -> Option<String> {
+        if !self.testing || self.status != Status::Complete {
+            return None;
+        }
+        let percent = self.test_progress.as_ref().map(|p| {
+            let done = p.load(std::sync::atomic::Ordering::Relaxed).min(1000);
+            crate::i18n::percent(f64::from(done) / 1000.0, 0)
+        });
+        Some(match (short, percent) {
+            (true, percent) => checking(percent.as_deref().unwrap_or("...")),
+            (false, Some(percent)) => crate::i18n::fmt(
+                // i18n: a download's status while its archive (zip, 7z, rar) is read back and checked before the download counts as done; {percent} how far, e.g. "45%"
+                crate::i18n::t("Testing the archive... ({percent})"),
+                &[("percent", &percent)],
+            ),
+            (false, None) => crate::i18n::t("Testing the archive...").to_owned(),
+        })
+    }
+
+    /// Its archive's last test found it damaged (#1661): "Damaged" in the list's Status column
+    /// (`short`), whole for its tip and a screen reader.
+    pub fn damaged_text(&self, short: bool) -> Option<String> {
+        if !self.damaged || self.status != Status::Complete || self.testing {
+            return None;
+        }
+        Some(if short {
+            // i18n: a download's status: its archive's test (Options → Archives) found it damaged. One short word: the list's Status column is narrow
+            crate::i18n::t("Damaged").to_owned()
+        } else {
+            crate::i18n::t(
+                // i18n: a download's status, whole (the Status cell's tip): its archive's test found it damaged; "Redownload" is the right-click command
+                "Damaged: its archive test found errors. Right-click → Redownload downloads it again",
+            )
+            .to_owned()
+        })
+    }
+
+    /// Every byte is in (#736): no rate and no time left, as once it is complete.
+    pub fn past_last_byte(&self) -> bool {
+        self.torrent.is_none() && self.snap.as_ref().is_some_and(every_byte_in)
+    }
+
     pub fn status_text(&self) -> String {
+        if self.move_from.is_some() {
+            // i18n: a download's status: its unfinished file is being moved to another folder
+            return crate::i18n::t("Moving...").into();
+        }
         if let Some(at) = self.at_service() {
             return at;
         }
@@ -1222,6 +1897,9 @@ impl Item {
         }
         if let Some(finishing) = self.finishing(true) {
             return finishing;
+        }
+        if let Some(damaged) = self.damaged_text(true) {
+            return damaged;
         }
         match self.status {
             // i18n: a download's status (state it is in, not a command): finished
@@ -1245,13 +1923,60 @@ impl Item {
     }
 
     pub fn time_left(&self) -> String {
-        match (self.status, self.size) {
-            (Status::Downloading, Some(t)) if self.rate() > 1.0 => {
-                time((t.saturating_sub(self.downloaded)) as f64 / self.rate())
-            }
-            _ => String::new(),
-        }
+        self.seconds_left().map_or(String::new(), time)
     }
+}
+
+/// A web address that is a site's only (`https://host/`, no path, query or fragment): what a
+/// referrer policy leaves of the page a download was started from ([`Item::web_page`]).
+fn site_only(address: &str) -> bool {
+    Url::parse(address)
+        .is_ok_and(|u| u.path() == "/" && u.query().is_none() && u.fragment().is_none())
+}
+
+/// What a running download shows as downloaded: `now`, its job's; a live stream recording or
+/// being saved (`live`, read before `now`) never less than `shown`. Its recording being saved, its
+/// run is over and what it recorded no longer counts in its progress (0 until its file is
+/// there): what it got stays, for the window and for the download limit, which counts only what
+/// is more than before (`Quota::record`) and would count the recording again as it came back.
+fn shown_downloaded(live: Option<mdm_tools::video::LiveState>, now: u64, shown: u64) -> u64 {
+    if live.is_some() { now.max(shown) } else { now }
+}
+
+/// Every byte of a download is in (#736): the last of it is written out (its whole size
+/// received and no connection receiving or connecting, as the progress window's "Finishing..."),
+/// the file checked, a video's streams joined, or the file named. Nothing comes in any more.
+fn every_byte_in(s: &mdm_engine::Snapshot) -> bool {
+    use mdm_engine::download::ConnStatus;
+    matches!(
+        s.state,
+        State::Verifying | State::Merging | State::Completing
+    ) || (s.state == State::Downloading
+        && s.size.is_some_and(|t| t > 0 && s.downloaded >= t)
+        && !s
+            .connections
+            .iter()
+            .any(|c| matches!(c.status, ConnStatus::Receiving | ConnStatus::Connecting)))
+}
+
+/// The list's Status column while a torrent's files or a finished file are checked (against
+/// the torrent's hashes, against a checksum): one short word and how far (#736).
+pub fn checking(percent: &str) -> String {
+    crate::i18n::fmt(
+        // i18n: the list's Status column while a torrent's files or a finished file are checked (against the torrent's hashes or a checksum); {percent} how much is checked, e.g. "42%". One short word: the column is narrow
+        crate::i18n::t("Checking {percent}"),
+        &[("percent", percent)],
+    )
+}
+
+/// The list's Status column while a video's picture and sound are joined: one short word and
+/// how far (#736).
+pub fn merging(percent: &str) -> String {
+    crate::i18n::fmt(
+        // i18n: the list's Status column while a video's picture and sound are joined into one file (ffmpeg); {percent} how far, e.g. "45%". One short word: the column is narrow
+        crate::i18n::t("Merging {percent}"),
+        &[("percent", percent)],
+    )
 }
 
 /// The "Last Try Date" and "Added" columns as stored, e.g. `Oct 28 21:44:12 2026` (the list's
@@ -1388,6 +2113,114 @@ pub fn rate(bps: f64) -> String {
     }
 }
 
+/// A speed limit as the user typed it, in whole KBytes/sec: `512 KB/sec`, `2048 KB/sec` (the
+/// Speed Limiter's boxes take KBytes/sec).
+pub fn limit_rate(bps: u64) -> String {
+    let kb = (bps / 1024).max(1);
+    if english() {
+        format!("{kb} KB/sec") // not translated: English path
+    } else {
+        unit(kb as f64, 0, "{n} KB/sec")
+    }
+}
+
+/// The speed limit that holds a running download back (#1191): what its Transfer rate says
+/// beside the speed, so a limiter left on is not forgotten.
+///
+/// It names the limit, not that the download is "limited": the speed measured goes a little
+/// above and below a limit it runs at, and a download slower than its limit (a slow server) is
+/// under that limit all the same, so comparing the two would flicker or claim too much.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Limit {
+    /// At most this many bytes a second for this download: its own limit (its progress
+    /// window's Speed Limiter tab, or remembered for the file), else the Speed Limiter's for one
+    /// file.
+    One(u64),
+    /// This many bytes a second for all downloads together (Speed Limiter settings, beyond
+    /// IDM), the tighter one for this download.
+    All(u64),
+}
+
+impl Limit {
+    /// The limit that binds a download whose own limit is `one`, while the limit for all
+    /// downloads together is `all` (both bytes/s, None: off) and `running` downloads share it
+    /// (this one among them). Its own binds unless that many downloads, each at it, would go
+    /// over the shared one: then each gets less than its own, and the shared one binds.
+    pub fn binding(one: Option<u64>, all: Option<u64>, running: usize) -> Option<Limit> {
+        match (one, all) {
+            (None, None) => None,
+            (Some(one), None) => Some(Limit::One(one)),
+            (None, Some(all)) => Some(Limit::All(all)),
+            (Some(one), Some(all)) => {
+                let together = one.saturating_mul(running.max(1) as u64);
+                Some(if together <= all {
+                    Limit::One(one)
+                } else {
+                    Limit::All(all)
+                })
+            }
+        }
+    }
+
+    /// Bytes a second.
+    pub fn rate(self) -> u64 {
+        match self {
+            Limit::One(r) | Limit::All(r) => r,
+        }
+    }
+
+    /// The progress window's Transfer rate with the limit after the speed `shown` (a
+    /// [`rate`]): `512.000 KB/sec (limit: 512 KB/sec)`.
+    pub fn after(self, shown: &str) -> String {
+        let limit = limit_rate(self.rate());
+        let template = match self {
+            // i18n: the progress window's Transfer rate row while a speed limit applies: {rate} is the download's speed now ("512.000 KB/sec"), {limit} the most this download may take ("512 KB/sec"). The row is narrow: keep it short
+            Limit::One(_) => crate::i18n::t("{rate} (limit: {limit})"),
+            // i18n: the progress window's Transfer rate row while the limit for all downloads together applies: {rate} is this download's speed now ("512.000 KB/sec"), {limit} the most all downloads together may take ("1024 KB/sec"). The row is narrow: keep it short
+            Limit::All(_) => crate::i18n::t("{rate} (limit for all downloads: {limit})"),
+        };
+        crate::i18n::fmt(template, &[("rate", shown), ("limit", &limit)])
+    }
+
+    /// The tip of a download's Transfer rate cell in the list (the column is too narrow for
+    /// the limit beside the speed).
+    pub fn tip(self) -> String {
+        let limit = limit_rate(self.rate());
+        let template = match self {
+            // i18n: tip of a download's Transfer rate in the list: {limit} is the most this download may take ("512 KB/sec"), set with the Speed Limiter
+            Limit::One(_) => crate::i18n::t("Speed Limiter: at most {limit} for this download"),
+            // i18n: tip of a download's Transfer rate in the list: {limit} is the most all downloads together may take ("1024 KB/sec"), set in the Speed Limiter's settings
+            Limit::All(_) => crate::i18n::t("Speed Limiter: {limit} for all downloads together"),
+        };
+        crate::i18n::fmt(template, &[("limit", &limit)])
+    }
+}
+
+/// The status strip's and the tray tip's word that the Speed Limiter is on (#1191), whatever
+/// runs: the limit for one download (`one`, Downloads → Speed Limiter → Turn on) and the limit
+/// for all downloads together (`all`, while it applies), bytes/s. None while both are off.
+pub fn limiter_hint(one: Option<u64>, all: Option<u64>) -> Option<String> {
+    let t = crate::i18n::t;
+    Some(match (one, all) {
+        (None, None) => return None,
+        (Some(one), None) => crate::i18n::fmt(
+            // i18n: the status bar and the tray icon's tip while Downloads → Speed Limiter is turned on: {limit} is the most each download may take ("512 KB/sec")
+            t("Speed Limiter: {limit} per download"),
+            &[("limit", &limit_rate(one))],
+        ),
+        (None, Some(all)) => crate::i18n::fmt(
+            // i18n: the status bar and the tray icon's tip while the Speed Limiter's limit for all downloads together is on: {limit} is the most they may take together ("1024 KB/sec")
+            t("Speed Limiter: {limit} for all downloads"),
+            &[("limit", &limit_rate(all))],
+        ),
+        (Some(one), Some(all)) => crate::i18n::fmt(
+            // i18n: the status bar and the tray icon's tip while both Speed Limiter limits are on: {one} is the most each download may take ("512 KB/sec"), {all} the most all of them together may take ("1024 KB/sec")
+            t("Speed Limiter: {one} per download, {all} for all"),
+            &[("one", &limit_rate(one)), ("all", &limit_rate(all))],
+        ),
+    })
+}
+
 /// The list's Size column: IDM puts two spaces before the unit (`200.00  MB`).
 pub fn size_list(b: u64) -> String {
     if english() {
@@ -1418,6 +2251,27 @@ pub fn time(secs: f64) -> String {
 }
 
 #[cfg(test)]
+mod private_mark_tests {
+    use super::*;
+
+    /// #1581: the list's mark, and what it says: a normal row has none; this session's private
+    /// row is kept as the option says; one read back from an earlier session was kept already.
+    #[test]
+    fn a_private_rows_mark_says_whether_it_is_kept() {
+        let url: Url = "https://files.example.com/a.zip".parse().unwrap();
+        let mut i = Item::new(1, url, PathBuf::from("a.zip"), Category::Compressed);
+        assert_eq!((i.private_mark(true), i.private_mark(false)), (None, None));
+        (i.private_window, i.context.private) = (true, true);
+        assert_eq!(i.private_mark(true), Some(PrivateMark::Kept));
+        assert_eq!(i.private_mark(false), Some(PrivateMark::MemoryOnly));
+        let reloaded: Item = serde_json::from_str(&serde_json::to_string(&i).unwrap()).unwrap();
+        assert!(!reloaded.context.private);
+        assert_eq!(reloaded.private_mark(false), Some(PrivateMark::Kept));
+        assert_ne!(PrivateMark::Kept.tip(), PrivateMark::MemoryOnly.tip());
+    }
+}
+
+#[cfg(test)]
 mod file_address_tests {
     use super::*;
 
@@ -1434,6 +2288,10 @@ mod file_address_tests {
         i.video = Some(VideoSpec {
             selector: "best".into(),
             subs: Default::default(),
+            parts: Vec::new(),
+            named: false,
+            duration: None,
+            part: None,
         });
         i
     }
@@ -1453,6 +2311,9 @@ mod file_address_tests {
             engine: None,
             helper: None,
             merging: None,
+            merge_failed: None,
+            recorded: 0,
+            recording: false,
         };
         // Looking the page up: no stream yet.
         assert_eq!(tool_snapshot(p.clone(), &page).url, page);
@@ -1487,6 +2348,22 @@ mod file_address_tests {
             f.context.referer.as_deref(),
             Some("https://www.example.com/get")
         );
+        // The page the browser started it from, whole, before its Referer (#607): a referrer
+        // policy often cuts that to the site's address.
+        f.set_referer(Some("https://www.example.com/".into()));
+        f.page = Some("https://www.example.com/files/a.html".into());
+        assert_eq!(f.web_page(), Some("https://www.example.com/files/a.html"));
+        // A site's address alone is the page only when nothing names one on it: a page the
+        // browser gave as only the site's (a tab gone to the home page) gives way to a Referer
+        // that is a whole page; a Referer cut to the site, with no page, is still shown.
+        f.page = Some("https://www.example.com/".into());
+        f.set_referer(Some("https://www.example.com/files/a.html".into()));
+        assert_eq!(f.web_page(), Some("https://www.example.com/files/a.html"));
+        f.page = None;
+        f.set_referer(Some("https://www.example.com/".into()));
+        assert_eq!(f.web_page(), Some("https://www.example.com/"));
+        f.page = Some(String::new());
+        assert_eq!(f.web_page(), Some("https://www.example.com/"));
     }
 
     /// The referer and a video's file address are kept with the list (#795); the browser's
@@ -1508,6 +2385,25 @@ mod file_address_tests {
             .replace(&format!(",\"file_url\":\"{STREAM}\""), "");
         let back: Item = serde_json::from_str(&old).unwrap();
         assert_eq!((back.referer, back.file_url), (None, None));
+    }
+
+    /// The page a download was started from is kept with the list (#607), and none is written
+    /// for a download without one.
+    #[test]
+    fn the_page_it_was_started_from_is_saved() {
+        let mut f = Item::new(
+            3,
+            "https://cdn.example.net/a.zip".parse().unwrap(),
+            PathBuf::from("a.zip"),
+            Category::Compressed,
+        );
+        assert!(!serde_json::to_string(&f).unwrap().contains("\"page\""));
+        f.page = Some("https://www.example.com/files/a.html".into());
+        let back: Item = serde_json::from_str(&serde_json::to_string(&f).unwrap()).unwrap();
+        assert_eq!(
+            back.web_page(),
+            Some("https://www.example.com/files/a.html")
+        );
     }
 }
 
@@ -1532,7 +2428,97 @@ mod size_tests {
 
 #[cfg(test)]
 mod tests {
+    /// A debrid torrent's ticked files are kept with the list; a list saved before them (no
+    /// `files`) means all of them.
+    #[test]
+    fn a_debrid_torrents_ticked_files_are_saved_and_older_lists_mean_all() {
+        let old: super::RemoteSpec =
+            serde_json::from_str(r#"{"account":7,"transfer":"RDT2","folder":"C:/dl"}"#).unwrap();
+        assert_eq!(old.files, None);
+        let spec = super::RemoteSpec {
+            account: 7,
+            files: Some(vec!["extras/notes.txt".into()]),
+            ..Default::default()
+        };
+        let text = serde_json::to_string(&spec).unwrap();
+        assert_eq!(
+            serde_json::from_str::<super::RemoteSpec>(&text).unwrap(),
+            spec
+        );
+        assert!(!serde_json::to_string(&old).unwrap().contains("files"));
+    }
+
+    /// #1262: a failure's reason goes to the log without the queries of the addresses in it.
+    #[test]
+    fn a_failure_is_logged_without_tokens() {
+        assert_eq!(
+            super::without_queries(
+                "error sending request for url (https://cdn.example/v/1.m3u8?vid=9&dt=abc): 414"
+            ),
+            "error sending request for url (https://cdn.example/v/1.m3u8?…): 414"
+        );
+        assert_eq!(
+            super::without_queries("http://a.example/x#frag and https://b.example/y"),
+            "http://a.example/x?… and https://b.example/y"
+        );
+        assert_eq!(
+            super::without_queries("HTTP Error 414: URI Too Long"),
+            "HTTP Error 414: URI Too Long"
+        );
+    }
+
     use super::*;
+
+    /// #1088: a download replaces the file chosen in the Save dialog only while its place is that
+    /// file; the choice is kept with the list (a download queued with Later, MDM restarted).
+    #[test]
+    fn a_download_replaces_only_the_file_chosen_while_it_is_its_place() {
+        let url = Url::parse("http://127.0.0.1:9/a.7z").unwrap();
+        let taken = PathBuf::from("dl").join("taken.7z");
+        let mut it = Item::new(1, url, taken.clone(), Category::Compressed);
+        assert!(!it.replaces());
+        it.replace_file = Some(taken.clone());
+        assert!(it.replaces());
+        let back: Item = serde_json::from_str(&serde_json::to_string(&it).unwrap()).unwrap();
+        assert_eq!(back.replace_file.as_deref(), Some(taken.as_path()));
+        assert!(back.replaces());
+        // Its place moved (another row's, a rename): nothing replaced there.
+        it.dest = PathBuf::from("dl").join("taken (1).7z");
+        assert!(!it.replaces());
+        // Never written for a download without one.
+        let none = Item::new(
+            2,
+            Url::parse("http://127.0.0.1:9/b.7z").unwrap(),
+            PathBuf::from("b.7z"),
+            Category::Compressed,
+        );
+        assert!(
+            !serde_json::to_string(&none)
+                .unwrap()
+                .contains("replace_file")
+        );
+    }
+
+    /// A finished gallery's files join its written files in time linear in them, each once.
+    #[test]
+    fn written_files_join_in_linear_time() {
+        let paths = |from: usize, n: usize| -> Vec<PathBuf> {
+            (from..from + n)
+                .map(|i| PathBuf::from(format!("/gallery/image-{i:09}.jpg")))
+                .collect()
+        };
+        mdm_labserver::growth::assert_linear(
+            2_000,
+            |n| (paths(0, n / 2), paths(n / 4, n)),
+            |(mut list, more)| {
+                add_written(&mut list, more);
+                list.len()
+            },
+        );
+        let mut list = paths(0, 3);
+        add_written(&mut list, paths(2, 3));
+        assert_eq!(list, paths(0, 5));
+    }
 
     fn video_item(size: Option<u64>, downloaded: u64, status: Status) -> Item {
         let url = Url::parse("https://example.org/a.mp4").unwrap();
@@ -1543,8 +2529,44 @@ mod tests {
         it.video = Some(VideoSpec {
             selector: "18".into(),
             subs: Default::default(),
+            parts: Vec::new(),
+            named: false,
+            duration: None,
+            part: None,
         });
         it
+    }
+
+    /// Joining a video's streams failed: why, and that what was downloaded stays for Resume,
+    /// by name; without anything kept, only why.
+    #[test]
+    fn a_failed_merge_says_what_stays() {
+        let url = Url::parse("https://example.org/a.mp4").unwrap();
+        let mut p = mdm_tools::video::Progress {
+            state: mdm_tools::video::State::Failed("Postprocessing: Conversion failed!".into()),
+            merge_failed: Some(vec![
+                PathBuf::from("/v/Talk.f640.mp4"),
+                PathBuf::from("/v/Talk.faud-English.mp4"),
+            ]),
+            ..Default::default()
+        };
+        let e = super::tool_snapshot(p.clone(), &url).error.unwrap();
+        assert!(e.contains("Conversion failed!"), "{e}");
+        assert!(e.contains("Resume"), "{e}");
+        assert!(
+            e.contains("Talk.f640.mp4") && e.contains("Talk.faud-English.mp4"),
+            "{e}"
+        );
+        p.merge_failed = Some(Vec::new());
+        let e = super::tool_snapshot(p.clone(), &url).error.unwrap();
+        assert!(
+            e.contains("Conversion failed!") && !e.contains("Resume"),
+            "{e}"
+        );
+        // Any other failure: yt-dlp's words as they are.
+        p.merge_failed = None;
+        let e = super::tool_snapshot(p, &url).error.unwrap();
+        assert_eq!(e, "Postprocessing: Conversion failed!");
     }
 
     /// #736: after the last byte the Status column says what is happening and how far.
@@ -1560,17 +2582,36 @@ mod tests {
             ..Default::default()
         };
         it.snap = Some(super::tool_snapshot(p.clone(), &url));
-        assert_eq!(it.status_text(), "45% merged");
+        // A short word and how far in the list; the progress window says it whole.
+        assert_eq!(it.status_text(), "Merging 45%");
         assert_eq!(it.finishing(false).as_deref(), Some("Merging... (45%)"));
+        assert!(it.past_last_byte());
         p.merging = Some(None);
         it.snap = Some(super::tool_snapshot(p.clone(), &url));
-        assert_eq!(it.status_text(), "Merging...");
-        let mut s = super::tool_snapshot(p, &url);
+        assert_eq!(it.status_text(), "Merging ...");
+        assert_eq!(it.finishing(false).as_deref(), Some("Merging..."));
+        let mut s = super::tool_snapshot(p.clone(), &url);
         s.state = State::Verifying;
         s.finishing = Some(0.5);
         it.snap = Some(s);
-        assert_eq!(it.status_text(), "50% verified");
+        assert_eq!(it.status_text(), "Checking 50%");
         assert_eq!(it.finishing(false).as_deref(), Some("Verifying... (50%)"));
+        assert!(it.past_last_byte());
+        // Still coming in (yt-dlp's own connection receiving): a rate and a time left as before.
+        p.merging = None;
+        p.speed = 1000.0;
+        it.snap = Some(super::tool_snapshot(p.clone(), &url));
+        assert!(!it.past_last_byte());
+        assert_eq!(it.finishing(true), None);
+        // Every byte in, the engine's connections done, before the merge: nothing comes in.
+        p.speed = 0.0;
+        p.engine = Some(Default::default());
+        it.snap = Some(super::tool_snapshot(p.clone(), &url));
+        assert!(it.past_last_byte());
+        // Short of the whole size: still coming.
+        p.downloaded = 99 * m;
+        it.snap = Some(super::tool_snapshot(p, &url));
+        assert!(!it.past_last_byte());
     }
 
     /// Without a size there's no share to show: no 0 % (from #384).
@@ -1739,7 +2780,85 @@ mod helper_connection_tests {
             engine: None,
             helper: None,
             merging: None,
+            merge_failed: None,
+            recorded: 0,
+            recording: false,
         }
+    }
+
+    /// A live stream yt-dlp records says no progress: what it has recorded is what's downloaded
+    /// (Downloaded, and the rate from its growth); a progress of its own counts when larger.
+    #[test]
+    fn a_recording_counts_as_downloaded() {
+        let page: Url = "https://www.example.com/live".parse().unwrap();
+        let mut p = progress();
+        p.helper = Some(mdm_tools::streams::Helper::Live);
+        p.recorded = 3 << 20;
+        let s = tool_snapshot(p.clone(), &page);
+        assert_eq!(s.downloaded, 3 << 20);
+        assert_eq!(s.connections[0].downloaded, 3 << 20);
+        assert!(matches!(s.connections[0].status, ConnStatus::Receiving));
+        p.downloaded = 4 << 20;
+        assert_eq!(tool_snapshot(p.clone(), &page).downloaded, 4 << 20);
+        p.recorded = 0;
+        p.downloaded = 0;
+        assert_eq!(tool_snapshot(p, &page).downloaded, 0);
+    }
+
+    /// A live stream whose recorder has opened its file is receiving, though nothing is written
+    /// yet (the file stays 0 bytes until its first block): not "Connecting". Before that, it is
+    /// connecting.
+    #[test]
+    fn a_recorder_that_opened_its_file_is_receiving() {
+        let page: Url = "https://www.example.com/live".parse().unwrap();
+        let mut p = progress();
+        p.helper = Some(mdm_tools::streams::Helper::Live);
+        let s = tool_snapshot(p.clone(), &page);
+        assert!(matches!(s.connections[0].status, ConnStatus::Connecting));
+        p.recording = true;
+        let s = tool_snapshot(p, &page);
+        assert_eq!((s.downloaded, s.connections[0].downloaded), (0, 0));
+        assert!(matches!(s.connections[0].status, ConnStatus::Receiving));
+    }
+
+    /// A live stream recorded, stopped and saved: what it shows as downloaded never drops while
+    /// it is saved (its run over, its progress 0), and the download limit counts the recording
+    /// once, not again as its file comes. A live stream started anew shows its new recording.
+    #[test]
+    fn a_saved_recording_is_counted_once() {
+        use mdm_tools::video::LiveState::{Recording, Saving};
+        const M: u64 = 1 << 20;
+        // (live_state read before the snapshot, the snapshot's downloaded)
+        let looks = [
+            // Started: nothing recorded yet.
+            (None, 0),
+            (Some(Recording), 4 * M),
+            (Some(Recording), 10 * M),
+            // Stop and save: read as recording, its run over in the snapshot.
+            (Some(Recording), 0),
+            (Some(Saving), 0),
+            // Saved as the snapshot was taken: its file's size.
+            (Some(Saving), 10 * M - 1000),
+            (None, 10 * M - 1000),
+        ];
+        let start = std::time::Instant::now();
+        let mut quota = crate::quota::Quota::default();
+        let mut shown = 0;
+        for (n, (live, now)) in looks.into_iter().enumerate() {
+            let before = shown;
+            shown = shown_downloaded(live, now, shown);
+            if live.is_some() {
+                assert!(shown >= before, "look {n}: {shown} < {before}");
+            }
+            quota.record(start, std::iter::once((7, shown)));
+        }
+        assert_eq!(shown, 10 * M - 1000);
+        assert_eq!(
+            quota.used(start, std::time::Duration::from_secs(3600)),
+            10 * M
+        );
+        // Not a live stream, or one not recording (yet, again): its job's own figure.
+        assert_eq!(shown_downloaded(None, 0, 10 * M), 0);
     }
 
     /// #793: a video yt-dlp downloads itself shows its one connection, not an empty list; one
@@ -1782,5 +2901,271 @@ mod helper_connection_tests {
         p.engine = None;
         p.state = mdm_tools::video::State::Done("Clip.mp4".into());
         assert!(tool_snapshot(p, &page).connections.is_empty());
+    }
+}
+
+/// The speed's average and the figure shown (#1176).
+#[cfg(test)]
+mod speed_tests {
+    use super::{SHOWN_EVERY, STILL, Speed, shown_epoch, shown_tick, until_shown};
+    use std::time::{Duration, Instant};
+
+    const MB: f64 = 1_048_576.0;
+
+    fn at(t: f64) -> Instant {
+        shown_epoch() + Duration::from_secs_f64(t)
+    }
+
+    /// Reads `bytes(t)` at each moment of `times`: the average after each, and the figure shown.
+    fn run(times: &[f64], bytes: impl Fn(f64) -> u64) -> (Speed, Vec<(f64, f64, f64)>) {
+        let mut s = Speed::new(at(0.0), 0);
+        let mut seen = Vec::new();
+        for &t in times {
+            s.read(at(t), bytes(t));
+            seen.push((t, s.average(), s.shown()));
+        }
+        (s, seen)
+    }
+
+    /// 1 MB/s for 5 s, then 3 MB/s.
+    fn step(t: f64) -> u64 {
+        if t < 5.0 {
+            (t * MB) as u64
+        } else {
+            (5.0 * MB + (t - 5.0) * 3.0 * MB) as u64
+        }
+    }
+
+    fn every(gap: f64, until: f64) -> Vec<f64> {
+        (1..)
+            .map(|n| n as f64 * gap)
+            .take_while(|t| *t <= until + 1e-9)
+            .collect()
+    }
+
+    /// Frames 25 a second, four a second, twice a second, or uneven: the same bytes make the
+    /// same average (the old fixed weight settled in 0.5 s at one and in 6 s at another).
+    #[test]
+    fn the_same_bytes_make_the_same_average_whatever_the_frames() {
+        let uneven: Vec<f64> = (1..)
+            .scan(0.0, |t, n: u32| {
+                *t += [0.25, 0.31, 0.19, 0.27, 0.42, 0.04][n as usize % 6];
+                Some(*t)
+            })
+            .take_while(|t| *t <= 10.0)
+            .chain([10.0])
+            .collect();
+        let gaps = [
+            every(0.04, 10.0),
+            every(0.25, 10.0),
+            every(0.5, 10.0),
+            uneven,
+        ];
+        for check in [6.5, 10.0] {
+            let averages: Vec<f64> = gaps
+                .iter()
+                .map(|times| {
+                    let upto: Vec<f64> = times.iter().copied().filter(|t| *t <= check).collect();
+                    run(&upto, step).0.average()
+                })
+                .collect();
+            let (lo, hi) = averages
+                .iter()
+                .fold((f64::MAX, 0.0f64), |(lo, hi), a| (lo.min(*a), hi.max(*a)));
+            assert!(hi / lo < 1.04, "at {check} s: {averages:?}");
+        }
+    }
+
+    /// It settles on a new pace: about two thirds of the way in three seconds, all of it in 15.
+    #[test]
+    fn it_settles_on_a_new_pace() {
+        let (s, seen) = run(&every(0.25, 20.0), step);
+        assert!(
+            (s.average() / (3.0 * MB) - 1.0).abs() < 0.01,
+            "{}",
+            s.average()
+        );
+        let after_3 = seen.iter().find(|(t, ..)| *t >= 8.0).unwrap().1 / MB;
+        assert!((2.1..2.5).contains(&after_3), "{after_3}");
+    }
+
+    /// From the first figure on, the average is the speed, not a climb from 0; the wait for the
+    /// first byte isn't counted in it.
+    #[test]
+    fn it_starts_at_the_speed() {
+        let (s, _) = run(&every(0.25, 0.5), |t| (t * MB) as u64);
+        assert!((s.average() / MB - 1.0).abs() < 1e-6, "{}", s.average());
+        let (s, _) = run(&every(0.25, 2.5), |t| ((t - 2.0).max(0.0) * MB) as u64);
+        assert!((s.average() / MB - 1.0).abs() < 0.15, "{}", s.average());
+    }
+
+    /// A steady download whose bytes come in bursts (64 KB at a time, read at uneven frames)
+    /// shows a steady figure: within 3 % of its speed once it has had three seconds.
+    #[test]
+    fn steady_bytes_show_a_steady_figure() {
+        let chunk = 64 * 1024;
+        let bursts = |t: f64| ((t * 2.0 * MB) as u64 / chunk) * chunk;
+        let times: Vec<f64> = (1..)
+            .scan(0.0, |t, n: u32| {
+                *t += [0.25, 0.21, 0.3, 0.04, 0.33][n as usize % 5];
+                Some(*t)
+            })
+            .take_while(|t| *t <= 20.0)
+            .collect();
+        let (_, seen) = run(&times, bursts);
+        for (t, _, shown) in seen.iter().filter(|(t, ..)| *t >= 3.0) {
+            assert!((shown / (2.0 * MB) - 1.0).abs() < 0.03, "{shown} at {t}");
+        }
+    }
+
+    /// The figure shown changes on the clock's ticks, twice a second, however often it is read;
+    /// the average moves under it meanwhile.
+    #[test]
+    fn the_figure_shown_changes_twice_a_second() {
+        // A speed that wobbles about 1 MB/s.
+        let wobble = |t: f64| ((t + 0.5 * (1.0 - t.cos())) * MB) as u64;
+        let (_, seen) = run(&every(0.04, 5.0), wobble);
+        let changes: Vec<_> = seen.windows(2).filter(|w| w[0].2 != w[1].2).collect();
+        // One each tick after the first.
+        let ticks = (5.0 / SHOWN_EVERY) as usize;
+        assert!((ticks - 1..=ticks).contains(&changes.len()), "{changes:?}");
+        for w in &changes {
+            assert_ne!(shown_tick(at(w[0].0)), shown_tick(at(w[1].0)), "{w:?}");
+        }
+        // Between ticks the figure stays as it is.
+        let within: Vec<_> = seen
+            .iter()
+            .filter(|(t, ..)| (2.1..2.45).contains(t))
+            .collect();
+        assert!(within.iter().all(|x| x.2 == within[0].2));
+        assert!(within.first().unwrap().1 != within.last().unwrap().1);
+        // The next frame is asked for as the clock ticks.
+        let wait = until_shown(at(2.3)).as_secs_f64();
+        assert!((0.2..0.21).contains(&wait), "{wait}");
+        assert_eq!(
+            shown_tick(at(2.3) + until_shown(at(2.3))),
+            shown_tick(at(2.6))
+        );
+    }
+
+    /// The time left goes with the figure shown: from the bytes done when it was read.
+    #[test]
+    fn the_time_left_goes_with_the_figure_shown() {
+        let (s, _) = run(&every(0.04, 4.02), |t| (t * MB) as u64);
+        let left = s.seconds_left((10.0 * MB) as u64).unwrap();
+        assert!((left - 6.0).abs() < 0.05, "{left}");
+        assert_eq!(Speed::new(at(0.0), 0).seconds_left(100), None);
+    }
+
+    /// Nothing for a while: 0, not what is left of the average. Every byte in (#736): 0 at once.
+    /// Fewer bytes than before (a connection's dropped, a file started over): the average goes
+    /// on, no jump.
+    #[test]
+    fn a_stall_an_end_and_a_start_over() {
+        let mut times = every(0.25, 3.0);
+        times.extend(every(0.25, STILL + 1.0).into_iter().map(|t| t + 3.0));
+        let (s, _) = run(&times, |t| (t.min(3.0) * MB) as u64);
+        assert_eq!((s.average(), s.shown()), (0.0, 0.0));
+
+        let (mut s, _) = run(&every(0.25, 3.0), |t| (t * MB) as u64);
+        s.clear(at(3.1), (3.1 * MB) as u64);
+        assert_eq!((s.average(), s.shown()), (0.0, 0.0));
+
+        let (mut s, _) = run(&every(0.25, 3.0), |t| (t * MB) as u64);
+        s.read(at(3.25), 1000);
+        assert!((s.average() / MB - 1.0).abs() < 1e-6, "{}", s.average());
+        s.read(at(3.5), 1000 + MB as u64 / 4);
+        assert!((s.average() / MB - 1.0).abs() < 1e-6, "{}", s.average());
+    }
+}
+
+/// Which speed limit a download's Transfer rate names, and how (#1191).
+#[cfg(test)]
+mod limit_tests {
+    use super::{Limit, limit_rate, limiter_hint};
+
+    const KB: u64 = 1024;
+
+    #[test]
+    fn its_own_limit_binds_until_the_shared_one_is_tighter() {
+        assert_eq!(Limit::binding(None, None, 1), None);
+        assert_eq!(
+            Limit::binding(Some(10 * KB), None, 3),
+            Some(Limit::One(10 * KB))
+        );
+        assert_eq!(
+            Limit::binding(None, Some(500 * KB), 3),
+            Some(Limit::All(500 * KB))
+        );
+        // One download at 10 KB/s under 500 KB/s for all: its own limit holds it.
+        assert_eq!(
+            Limit::binding(Some(10 * KB), Some(500 * KB), 1),
+            Some(Limit::One(10 * KB))
+        );
+        // 50 of them at 10 KB/s fill 500 KB/s exactly: still their own.
+        assert_eq!(
+            Limit::binding(Some(10 * KB), Some(500 * KB), 50),
+            Some(Limit::One(10 * KB))
+        );
+        // 51 would take more than 500 KB/s together: the shared limit holds them.
+        assert_eq!(
+            Limit::binding(Some(10 * KB), Some(500 * KB), 51),
+            Some(Limit::All(500 * KB))
+        );
+        // Its own above the shared one: the shared one, even alone.
+        assert_eq!(
+            Limit::binding(Some(800 * KB), Some(500 * KB), 1),
+            Some(Limit::All(500 * KB))
+        );
+        // No count (asked before it runs) counts it alone; no overflow at the top.
+        assert_eq!(
+            Limit::binding(Some(10 * KB), Some(500 * KB), 0),
+            Some(Limit::One(10 * KB))
+        );
+        assert_eq!(
+            Limit::binding(Some(u64::MAX), Some(500 * KB), 2),
+            Some(Limit::All(500 * KB))
+        );
+    }
+
+    #[test]
+    fn limits_read_as_typed() {
+        assert_eq!(limit_rate(512 * KB), "512 KB/sec");
+        assert_eq!(limit_rate(2048 * KB), "2048 KB/sec");
+        // Below a kilobyte (a share of the limit for all): never "0 KB/sec".
+        assert_eq!(limit_rate(100), "1 KB/sec");
+    }
+
+    #[test]
+    fn transfer_rate_tip_and_hint() {
+        assert_eq!(
+            Limit::One(512 * KB).after("511.998 KB/sec"),
+            "511.998 KB/sec (limit: 512 KB/sec)"
+        );
+        assert_eq!(
+            Limit::All(1024 * KB).after("340.112 KB/sec"),
+            "340.112 KB/sec (limit for all downloads: 1024 KB/sec)"
+        );
+        assert_eq!(
+            Limit::One(10 * KB).tip(),
+            "Speed Limiter: at most 10 KB/sec for this download"
+        );
+        assert_eq!(
+            Limit::All(500 * KB).tip(),
+            "Speed Limiter: 500 KB/sec for all downloads together"
+        );
+        assert_eq!(limiter_hint(None, None), None);
+        assert_eq!(
+            limiter_hint(Some(10 * KB), None).as_deref(),
+            Some("Speed Limiter: 10 KB/sec per download")
+        );
+        assert_eq!(
+            limiter_hint(None, Some(500 * KB)).as_deref(),
+            Some("Speed Limiter: 500 KB/sec for all downloads")
+        );
+        assert_eq!(
+            limiter_hint(Some(10 * KB), Some(500 * KB)).as_deref(),
+            Some("Speed Limiter: 10 KB/sec per download, 500 KB/sec for all")
+        );
     }
 }

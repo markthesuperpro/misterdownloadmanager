@@ -74,6 +74,46 @@ pub const TITLES: [&str; COLS] = [
     // i18n: column title: what a torrent sends to peers, bytes per second
     "Upload speed",
 ];
+/// The "Status" column's data slot.
+pub const STATUS: usize = 3;
+/// The "Transfer rate" column's data slot.
+pub const RATE: usize = 5;
+/// Status's default width before #736 (IDM's), as saved lists have it.
+const OLD_STATUS_WIDTH: f32 = 65.0;
+/// A cell's text starts 6 px in and ends 3 px before the column's separator, its last pixel.
+pub const CELL_PAD: f32 = 6.0 + 3.0 + 1.0;
+
+/// The Status column's default width (#736) in the interface language `code`, whose 100 % is
+/// written `full`: [`DEFAULT_WIDTHS`]'s, or wider where `measure` (the list's font) needs it
+/// for the widest of what the cell says while a file is checked or a video joined.
+pub fn status_width(code: &str, full: &str, measure: impl Fn(&str) -> f32) -> f32 {
+    let need = finishing_texts(code, full)
+        .iter()
+        .map(|s| measure(s))
+        .fold(0.0, f32::max);
+    DEFAULT_WIDTHS[STATUS].max((need + CELL_PAD).ceil())
+}
+
+/// What the Status cell says at its widest while a file is checked or a video joined, in
+/// language `code` (`crate::model::checking` and `merging`): the word with 100 % (as `full`, and
+/// as English writes it) and with "..." before MDM knows how far; and "Damaged", an archive its
+/// test found damaged (#1661).
+pub fn finishing_texts(code: &str, full: &str) -> Vec<String> {
+    let i18n = crate::i18n::i18n();
+    let Some(lang) = i18n.from_code(code) else {
+        return Vec::new();
+    };
+    let mut texts = vec![i18n.t(lang, "Damaged").to_owned()];
+    for template in ["Checking {percent}", "Merging {percent}"] {
+        for percent in [full, "100%", "..."] {
+            texts.push(crate::i18n::fmt(
+                i18n.t(lang, template),
+                &[("percent", percent)],
+            ));
+        }
+    }
+    texts
+}
 /// The "Added" column's data slot.
 pub const ADDED: usize = 8;
 /// The "Source" column's data slot: its cell is "Web" or "Torrent", painted as a chip.
@@ -87,9 +127,14 @@ pub const RATIO: usize = 11;
 pub const UPLOAD: usize = 12;
 
 /// IDM's default column widths (and ours for Added, room for a 12-hour clock's
-/// `Oct 28 9:05:01 AM 2026`, Source, Peers, Share ratio and Upload speed).
+/// `Oct 28 9:05:01 AM 2026`, Source, Peers, Share ratio and Upload speed). Status is wider than
+/// IDM's 65 px (#736): one word and a percentage while a file is checked or a video joined
+/// ("Checking 45%", German's "Zusammenführen 100 %"). 132 px is the least it has: while nobody
+/// resized it, it grows to what the list's font needs in the interface language
+/// ([`status_width`]). Linux draws with fontconfig's interface font, often DejaVu Sans, wider
+/// than Windows' Segoe UI.
 pub const DEFAULT_WIDTHS: [f32; COLS] = [
-    150.0, 20.0, 75.0, 65.0, 75.0, 95.0, 65.0, 200.0, 145.0, 62.0, 64.0, 92.0, 100.0,
+    150.0, 20.0, 75.0, 132.0, 75.0, 95.0, 65.0, 200.0, 145.0, 62.0, 64.0, 92.0, 100.0,
 ];
 /// Default display order: Source first, then IDM's, a torrent's three columns after its rate, and
 /// Added after Last Try Date.
@@ -98,7 +143,8 @@ const DEFAULT_ORDER: [usize; COLS] = [SOURCE, 0, 1, 2, 3, 4, 5, UPLOAD, PEERS, R
 const MIN_WIDTH: f32 = 16.0;
 /// How far from a separator a press grabs it for resizing.
 const GRIP: f32 = 4.0;
-/// Pointer travel before a header press becomes a column drag.
+/// Pointer travel before a header press becomes a column drag, and a press on a row a drag of its
+/// files out of the list.
 const DRAG_START: f32 = 5.0;
 
 /// A column filter (beyond IDM, user 2026-10-29): a few fixed values to keep, or text the cell
@@ -186,11 +232,17 @@ pub struct ListState {
     /// A selection box being dragged: where it started (x in content, y in rows' space) and
     /// whether Ctrl adds it to the selection.
     marquee: Option<(Pos2, bool)>,
+    /// A press on this row, held: where it went down (English). A drag of the rows' files once
+    /// the pointer is [`DRAG_START`] away from there (egui calls a long press a drag too).
+    row_press: Option<(usize, Pos2)>,
     /// Type-ahead: the letters typed so far and when the last one came (seconds).
     typed: String,
     /// A menu is open: its keys (and letters) are its own, not the list's.
     pub menu_open: bool,
     typed_at: f64,
+    /// Status keeps its default width, fitted to the list's font and the interface language on
+    /// every frame ([`status_width`]), until someone resizes it.
+    status_fits: bool,
 }
 
 impl Default for ListState {
@@ -210,9 +262,11 @@ impl Default for ListState {
             filter_open: None,
             filter_hscroll: 0.0,
             marquee: None,
+            row_press: None,
             typed: String::new(),
             menu_open: false,
             typed_at: 0.0,
+            status_fits: true,
         }
     }
 }
@@ -225,6 +279,10 @@ pub struct Layout {
     pub widths: Vec<f32>,
     pub visible: Vec<bool>,
     pub sort: Option<(usize, bool)>,
+    /// Status keeps its default width (fitted to the font and language where it runs); `None`
+    /// in a layout saved before #736, where a Status at IDM's 65 px means it was never resized.
+    #[serde(default)]
+    pub status_fits: Option<bool>,
 }
 
 impl ListState {
@@ -245,6 +303,7 @@ impl ListState {
         self.order = fresh.order;
         self.widths = fresh.widths;
         self.visible = fresh.visible;
+        self.status_fits = fresh.status_fits;
         self.hscroll = 0.0;
     }
 
@@ -254,6 +313,7 @@ impl ListState {
             widths: self.widths.to_vec(),
             visible: self.visible.to_vec(),
             sort: self.sort,
+            status_fits: Some(self.status_fits),
         }
     }
 
@@ -309,6 +369,15 @@ impl ListState {
             self.widths[c] = l.widths.get(c).copied().unwrap_or(*default).max(MIN_WIDTH);
             self.visible[c] = l.visible.get(c).copied().unwrap_or(true);
         }
+        // Status at IDM's 65 px, as every list was saved before it widened (#736), was never
+        // made wider or narrower: the new default, fitted to the font when the list is drawn. A
+        // width someone chose stays.
+        self.status_fits = l
+            .status_fits
+            .unwrap_or(self.widths[STATUS] == OLD_STATUS_WIDTH);
+        if self.status_fits {
+            self.widths[STATUS] = DEFAULT_WIDTHS[STATUS].max(self.widths[STATUS]);
+        }
         self.visible[0] = true;
         self.sort = l.sort.filter(|(c, _)| *c < COLS);
     }
@@ -330,6 +399,18 @@ pub struct Row {
     /// In a queue: the Q column shows a queue icon (IDM: stacked files).
     pub queued: bool,
     pub cells: [String; COLS],
+    /// The Status cell's whole text when the cell shows it short ("Checking 45%" for
+    /// "Verifying... (45%)", #736): the cell's tip starts with it, and a screen reader says it.
+    pub status_whole: Option<String>,
+    /// The speed limit holding the download back (#1191), said by the Transfer rate cell's tip:
+    /// the column is too narrow for it beside the speed.
+    pub rate_tip: Option<String>,
+    /// How far the download is, 0..=1, when the model knows (a file with a known size): a screen
+    /// reader gets it as the row's own progress bar (#1190).
+    pub progress: Option<f64>,
+    /// From a private (incognito) window (#1581): the Status cell starts with a mask, and its
+    /// tip, and what a screen reader says of the row, with this (whether the list keeps it).
+    pub private: Option<String>,
 }
 
 #[derive(Default)]
@@ -341,6 +422,9 @@ pub struct ListResponse {
     pub pick: Option<Pick>,
     /// Double-click on this row.
     pub double_clicked: Option<usize>,
+    /// The selected rows were dragged, from this one (#1210): their files go out, as Explorer's
+    /// do (the app decides what they carry). A row not selected is selected first.
+    pub drag_out: Option<usize>,
     /// Enter on the focused row (Open, as its menu says, whatever a double-click does).
     pub enter: Option<usize>,
     /// Alt+Enter: the focused row's Properties.
@@ -521,6 +605,24 @@ pub fn show(
     fill(&p, l + 1.0, t + 1.0, r - 1.0, b - 1.0, BG());
     let (cl, ct, cr, cb) = (l + 2.0, t + 2.0, r - 2.0, b - 2.0);
     let font = winui::tahoma();
+    // Status at its default width follows the font and the language (#736): a few words to
+    // measure, kept by egui from frame to frame.
+    if st.status_fits {
+        st.widths[STATUS] = status_width(crate::i18n::code(), &crate::i18n::percent(1.0, 0), |s| {
+            winui::text_width_font(&p, font.clone(), s)
+        });
+    }
+    // A CJK interface's 12 px headers get a little more room in columns the user hasn't resized
+    // (#837: Korean "Time left" was ellipsized at its Latin-era default width). Applied before
+    // the widths are summed, and only to a width still at its default, so a resize stays.
+    let shown_now = st.shown();
+    widen_cjk_headers(
+        &mut st.widths,
+        &shown_now,
+        crate::i18n::cjk(),
+        st.sort,
+        |c| winui::text_width_font(&p, font.clone(), crate::i18n::tc("column", TITLES[c])),
+    );
 
     // Scroll bars (notes/ui-spec/scrollbars.md), decided like Win32: each one shows when the
     // content overflows the room the other one leaves.
@@ -600,6 +702,7 @@ pub fn show(
             HeaderDrag::Resize { col, width, x0 } => {
                 ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
                 st.widths[col] = (width + pp.x - x0).round().max(MIN_WIDTH);
+                st.status_fits &= col != STATUS;
             }
             HeaderDrag::Press { col, x0 } if (pp.x - x0).abs() >= DRAG_START => {
                 let start = cols.iter().find(|s| s.0 == col).map_or(x0, |s| s.1);
@@ -617,6 +720,7 @@ pub fn show(
         && let Some(col) = pointer.and_then(|pp| near_sep(pp.x))
     {
         st.widths[col] = fit_width(&p, &font, col, rows);
+        st.status_fits &= col != STATUS;
         st.drag = None;
     }
     if hresp.drag_stopped() {
@@ -669,6 +773,7 @@ pub fn show(
     let p_all = p.clone();
     let p = p.with_clip_rect(screen(header));
     fill(&p, cl, ct, rr, ct + header_h() - 1.0, HEADER_BG());
+    winui::header_shade(&p, cl, rr, ct + header_h() - 1.0, false);
     for (c, x0, x1) in &cols {
         let hovered = hresp
             .hover_pos()
@@ -706,7 +811,11 @@ pub fn show(
         } else if let Some(t) = tint {
             fill(&p, *x0, ct, x1 - 1.0, ct + header_h() - 1.0, t);
         }
-        fill(&p, *x1, ct, *x1, ct + header_h() - 1.0, HEADER_SEP());
+        // Windows XP's headers: the shaded bottom (orange under the pointer) over the tints.
+        if state != winui::State::Normal || st.sort.is_some_and(|(sc, _)| sc == *c) {
+            winui::header_shade(&p, *x0, x1 - 1.0, ct + header_h() - 1.0, hovered);
+        }
+        winui::header_divider(&p, *x1, ct, ct + header_h() - 1.0, HEADER_SEP());
         let mut arrow_room = if st.sort.is_some_and(|(sc, _)| sc == *c) {
             14.0
         } else {
@@ -780,6 +889,13 @@ pub fn show(
         ui.ctx()
             .accesskit_node_builder(resp.id, |n| n.set_active_descendant(row.accesskit_id()));
     }
+    // A screen reader can move the focus to the list (and its rows, below): it takes the keys
+    // (#1190). Named for UI Automation's scripts too.
+    ui.ctx()
+        .accesskit_node_builder(resp.id, |n| n.set_author_id("downloads"));
+    if winui::focus_target(ui.ctx(), resp.id) {
+        st.focused = true;
+    }
     let bp = p.with_clip_rect(screen(body));
     // Fully visible rows; the list scrolls by whole rows until the last one is fully shown.
     let page_rows = (body.height() / row_h()).floor().max(1.0);
@@ -800,6 +916,22 @@ pub fn show(
     let reach = winui::reachable_rows(rows.len(), (st.scroll / row_h()).round() as usize, page);
     if a11y && let Some(idx) = winui::row_asked_for(ui, reach.clone(), row_id) {
         st.scroll_to = Some(idx);
+    }
+    // A row a screen reader selects (UI Automation's Select, AccessKit's click) or moves the
+    // focus to: selected alone, as a click selects it; the focus also gives the list the keys
+    // (#1190).
+    if a11y {
+        use egui::accesskit::Action;
+        let focused = winui::row_asked(ui, reach.clone(), row_id, &[Action::Focus]);
+        if let Some(idx) =
+            focused.or_else(|| winui::row_asked(ui, reach.clone(), row_id, &[Action::Click]))
+        {
+            out.pick = Some(Pick::Only(idx));
+            ui.ctx().request_repaint();
+        }
+        if focused.is_some() {
+            st.focused = true;
+        }
     }
     if let Some(row) = st.scroll_to.take() {
         let top = row as f32 * row_h();
@@ -839,7 +971,11 @@ pub fn show(
         rows_ui.interact(bounds, row_id(idx), egui::Sense::hover());
         let spoken = [0usize, 3, 2]
             .iter()
-            .map(|c| row.cells[*c].as_str())
+            .map(|c| match &row.status_whole {
+                Some(whole) if *c == 3 => whole.as_str(),
+                _ => row.cells[*c].as_str(),
+            })
+            .chain(row.private.as_deref())
             .filter(|t| !t.is_empty())
             .collect::<Vec<_>>()
             .join(", ");
@@ -851,6 +987,10 @@ pub fn show(
             n.set_position_in_set(idx);
             n.set_size_of_set(rows.len());
             n.add_action(egui::accesskit::Action::ScrollIntoView);
+            // Selected by a screen reader's Select (a click), and a place for its focus
+            // (#1190: no row could take it): both handled above.
+            n.add_action(egui::accesskit::Action::Click);
+            n.add_action(egui::accesskit::Action::Focus);
             n.set_bounds(egui::accesskit::Rect {
                 x0: (bounds.left() * ppp) as f64,
                 y0: (bounds.top() * ppp) as f64,
@@ -880,6 +1020,17 @@ pub fn show(
         if let Some(row) = rows.get(idx) {
             let picked = selected.get(idx).copied().unwrap_or(false);
             expose_row(idx, row, picked);
+            // The download's progress as a progress bar of its own (#1190, #1406): the same node
+            // the Download status page carries, so a reader's progress reporting follows it
+            // without anyone moving the focus (winui::expose_progress).
+            if let Some(frac) = row.progress {
+                let bar = row_id(idx).with("progress");
+                let bar_rc = screen(Rect::from_min_size(
+                    pos2(cl, top),
+                    egui::vec2(rr - cl, row_h()),
+                ));
+                winui::expose_progress(&rows_ui, bar_rc, bar, frac);
+            }
             let sel = picked && st.focused;
             // The focused row's dotted outline only once the keyboard is in use, as every
             // control's focus (winui::keyboard_in_use).
@@ -916,6 +1067,21 @@ pub fn show(
                 // The file-type icon sits in the File Name column, wherever it is.
                 let tx = if *c == 0 {
                     icons.paint_in(ui, &bp, row.icon.clone(), pos2(x0 + 4.0, top));
+                    x0 + 22.0
+                } else if *c == STATUS && row.private.is_some() {
+                    // A private window's download (#1581): a mask before its status, in the
+                    // row's text colour, kept to the cell.
+                    let ink = if sel { winui::SELECTION_TEXT() } else { TEXT() };
+                    let cell = Rect::from_min_max(pos2(*x0, top), pos2(*x1 - 1.0, top + row_h()));
+                    crate::chrome::paint_image(
+                        ui,
+                        &bp.with_clip_rect(screen(cell.intersect(body))),
+                        crate::icons::private_mark(ink),
+                        screen(Rect::from_min_size(
+                            pos2(x0 + 4.0, top),
+                            egui::vec2(16.0, 16.0),
+                        )),
+                    );
                     x0 + 22.0
                 } else {
                     x0 + 6.0
@@ -955,8 +1121,19 @@ pub fn show(
                     .map(english)
                     .is_some_and(|h| cell.contains(h))
                 {
-                    let tip = if *c == 3 {
-                        status_tip(idx)
+                    let tip = if *c == STATUS {
+                        // Private window's mark first (#1581), the whole status, the events.
+                        let events = status_tip(idx);
+                        row.private
+                            .iter()
+                            .chain(&row.status_whole)
+                            .chain(Some(&events))
+                            .filter(|t| !t.is_empty())
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    } else if *c == RATE && !row.cells[*c].is_empty() {
+                        row.rate_tip.clone().unwrap_or_default()
                     } else {
                         String::new()
                     };
@@ -988,6 +1165,16 @@ pub fn show(
         }
     }
     expose_out_of_view(reach.start.max(first + visible)..reach.end);
+    // While the list has the keys (no menu open, no text box focused), its focused row is what a
+    // screen reader says has the focus, and follows as the keys move it; the list itself while
+    // it has no rows (#1190: the reader never went into the list).
+    if st.focused && !st.menu_open && ui.ctx().memory(|m| m.focused().is_none()) {
+        let shown = |f: &usize| reach.contains(f) || (first..first + visible).contains(f);
+        let item = focus
+            .filter(|f| *f < rows.len() && shown(f))
+            .map_or(resp.id, row_id);
+        winui::keys_with(ui.ctx(), item);
+    }
     if let Some(full) = cut_under_pointer {
         // At the pointer: the list is one widget, and a tip placed by it showed under its
         // bottom edge, far from the row.
@@ -995,8 +1182,9 @@ pub fn show(
     }
     filter_box(ui, st);
     for (_, _, x1) in cols.iter().filter(|_| !rows.is_empty()) {
-        // One line at col.right + 1.
-        fill(&bp, x1 + 1.0, body_top, x1 + 1.0, rb, GRID_V_RIGHT());
+        // On the column's last pixel, under its header's divider: one straight line from the
+        // header down (#924: it sat a pixel to the right, on the next column's first).
+        fill(&bp, *x1, body_top, *x1, rb, GRID_V_RIGHT());
     }
     // While a column is dragged: a translucent copy of its header follows the pointer, and a
     // 2 px mark shows where it will land.
@@ -1128,6 +1316,33 @@ pub fn show(
         out.context = Some((focus, pos2(winui::mx(at.x), at.y)));
     }
 
+    // A drag from a row carries the selected rows' files out of the window, as from Explorer's
+    // list (#1210): from a row not selected, that row is selected first (Ctrl adds it), as a list
+    // view selects on the press. It goes once the pointer has moved a few pixels with the button
+    // held, so a click still selects and a double-click opens.
+    if resp.drag_started()
+        && let Some(origin) = ui.input(|i| i.pointer.press_origin()).map(english)
+        && body.contains(origin)
+        && let Some(row) = row_at(origin)
+    {
+        st.row_press = Some((row, origin));
+        if !selected.get(row).copied().unwrap_or(false) {
+            out.pick = Some(if mods.command {
+                Pick::Toggle(row)
+            } else {
+                Pick::Only(row)
+            });
+        }
+    }
+    if let Some((row, origin)) = st.row_press {
+        if !ui.input(|i| i.pointer.primary_down()) {
+            st.row_press = None;
+        } else if pointer.is_some_and(|pp| pp.distance(origin) >= DRAG_START) {
+            st.row_press = None;
+            out.drag_out = Some(row);
+        }
+    }
+
     // A selection box, dragged from blank space (below the rows or right of the columns), as in
     // Explorer: the rows it touches are selected, Ctrl adds them; dragging past the top or bottom
     // scrolls.
@@ -1206,6 +1421,42 @@ fn fit_width(p: &egui::Painter, font: &egui::FontId, col: usize, rows: &[Row]) -
         // The queue icon and the source chip have their own sizes.
         1 | SOURCE => DEFAULT_WIDTHS[col],
         _ => title.max(cells).ceil().max(MIN_WIDTH),
+    }
+}
+
+/// Widen the default-width columns of a CJK interface so each header title fits beside its
+/// filter funnel and, when sorted, the sort arrow (#837). Only a column still at its
+/// [`DEFAULT_WIDTHS`] value is touched: a width the user dragged (or a saved layout with another
+/// width) is theirs, even if that leaves the title ellipsized. After the first widening the width
+/// is no longer the default, so later frames leave it alone and the user can shrink it again.
+fn widen_cjk_headers(
+    widths: &mut [f32; COLS],
+    shown: &[usize],
+    cjk: bool,
+    sort: Option<(usize, bool)>,
+    mut title_width: impl FnMut(usize) -> f32,
+) {
+    if !cjk {
+        return;
+    }
+    for &c in shown {
+        // The queue icon and the source chip have their own fixed widths.
+        if c == 1 || c == SOURCE || (widths[c] - DEFAULT_WIDTHS[c]).abs() >= 0.5 {
+            continue;
+        }
+        // The title's pen is 6 px in and it ends 4 px before the column's inclusive right edge,
+        // one px left of the separator (11 px together); the funnel reserves 14 px (as the
+        // header painter does for a roomy column), the sort arrow another 14.
+        let arrow_room = 14.0
+            + if sort.is_some_and(|(col, _)| col == c) {
+                14.0
+            } else {
+                0.0
+            };
+        let need = (title_width(c) + 11.0 + arrow_room).ceil();
+        if need > widths[c] {
+            widths[c] = need;
+        }
     }
 }
 
@@ -1536,6 +1787,49 @@ mod tests {
     }
 
     #[test]
+    fn cjk_headers_only_widen_untouched_default_columns() {
+        // Korean "Time left" needs 70 px of text at 12 px: 70 + 11 + the funnel's 14.
+        let time_left = |c: usize| if c == 4 { 70.0 } else { 10.0 };
+        let mut widths = DEFAULT_WIDTHS;
+        widen_cjk_headers(&mut widths, &[0, 4], true, None, time_left);
+        assert_eq!(widths[4], 95.0);
+        assert_eq!(
+            widths[0], DEFAULT_WIDTHS[0],
+            "a fitting header keeps its width"
+        );
+
+        // The user dragged the column elsewhere: nothing is forced back.
+        widths[4] = 120.0;
+        widen_cjk_headers(&mut widths, &[4], true, None, time_left);
+        assert_eq!(widths[4], 120.0);
+        widths[4] = 60.0;
+        widen_cjk_headers(&mut widths, &[4], true, None, time_left);
+        assert_eq!(widths[4], 60.0, "a narrowed column is the user's");
+
+        // English keeps every default width.
+        let mut english = DEFAULT_WIDTHS;
+        widen_cjk_headers(
+            &mut english,
+            &(0..COLS).collect::<Vec<_>>(),
+            false,
+            None,
+            |_| 200.0,
+        );
+        assert_eq!(english, DEFAULT_WIDTHS);
+
+        // A sorted column also needs its arrow's 14 px.
+        let mut sorted = DEFAULT_WIDTHS;
+        widen_cjk_headers(&mut sorted, &[4], true, Some((4, true)), time_left);
+        assert_eq!(sorted[4], 109.0);
+
+        // The queue icon and the source chip have fixed widths.
+        let mut fixed = DEFAULT_WIDTHS;
+        widen_cjk_headers(&mut fixed, &[1, SOURCE], true, None, |_| 200.0);
+        assert_eq!(fixed[1], DEFAULT_WIDTHS[1]);
+        assert_eq!(fixed[SOURCE], DEFAULT_WIDTHS[SOURCE]);
+    }
+
+    #[test]
     fn moving_a_column_right_and_left() {
         let mut st = ListState::default();
         let cols = spans(&st);
@@ -1557,6 +1851,10 @@ mod tests {
             icon: IconKey::Silk("page_white"),
             queued,
             cells,
+            status_whole: None,
+            private: None,
+            rate_tip: None,
+            progress: None,
         }
     }
 
@@ -1614,6 +1912,7 @@ mod tests {
             widths: vec![200.0, 20.0, 75.0, 65.0, 75.0, 95.0, 65.0, 300.0],
             visible: vec![true; 8],
             sort: Some((2, false)),
+            status_fits: None,
         };
         let mut st = ListState::default();
         st.apply(old);
@@ -1634,6 +1933,77 @@ mod tests {
         assert_eq!(st.sort, Some((2, false)));
     }
 
+    /// #736: a list saved with Status at IDM's 65 px (never resized) gets the wider default;
+    /// a width someone chose stays.
+    #[test]
+    fn status_at_the_old_default_widens() {
+        let saved = |status: f32| Layout {
+            order: DEFAULT_ORDER.to_vec(),
+            widths: vec![
+                150.0, 20.0, 75.0, status, 75.0, 95.0, 65.0, 200.0, 145.0, 62.0, 64.0, 92.0, 100.0,
+            ],
+            visible: vec![true; COLS],
+            sort: None,
+            status_fits: None,
+        };
+        let mut st = ListState::default();
+        st.apply(saved(65.0));
+        assert_eq!(st.widths[STATUS], DEFAULT_WIDTHS[STATUS]);
+        assert!(st.status_fits, "and it follows the font from now on");
+        assert_eq!(st.layout().status_fits, Some(true));
+        // Last Try Date's 65 px is its own default, not Status's.
+        assert_eq!(st.widths[6], 65.0);
+        for chosen in [80.0, 64.0, 200.0] {
+            let mut st = ListState::default();
+            st.apply(saved(chosen));
+            assert_eq!(st.widths[STATUS], chosen);
+            assert!(!st.status_fits);
+        }
+        // Saved since: the layout says whether Status keeps its default, whatever its width.
+        let mut st = ListState::default();
+        st.apply(Layout {
+            status_fits: Some(false),
+            ..saved(65.0)
+        });
+        assert_eq!(st.widths[STATUS], 65.0, "chosen, if at IDM's width");
+        let mut st = ListState::default();
+        st.apply(Layout {
+            status_fits: Some(true),
+            ..saved(147.0)
+        });
+        assert!(st.status_fits);
+        assert_eq!(st.widths[STATUS], 147.0, "as fitted where it was saved");
+        // A layout saved before #736 has no such field.
+        let old: Layout = serde_json::from_str(
+            r#"{"order":[0,1,2,3,4,5,6,7],"widths":[200,20,75,65,75,95,65,300],
+                "visible":[true,true,true,true,true,true,true,true],"sort":null}"#,
+        )
+        .unwrap();
+        assert_eq!(old.status_fits, None);
+        // Columns as they first were: Status fits again.
+        let mut st = ListState::default();
+        st.apply(saved(80.0));
+        st.reset_columns();
+        assert!(st.status_fits);
+    }
+
+    /// #736: Status's default is 132 px, or what the font needs where that is more.
+    #[test]
+    fn status_width_grows_with_the_font() {
+        let texts = finishing_texts("de", "100\u{a0}%");
+        assert!(texts.iter().any(|t| t.contains("100\u{a0}%")));
+        assert!(texts.iter().any(|t| t.contains("...")));
+        // As narrow as no text: the default.
+        assert_eq!(status_width("de", "100 %", |_| 0.0), DEFAULT_WIDTHS[STATUS]);
+        // A wide font: the widest text, its padding, whole pixels.
+        let wide = |s: &str| s.chars().count() as f32 * 7.3;
+        let widest = texts.iter().map(|t| wide(t)).fold(0.0, f32::max);
+        assert_eq!(
+            status_width("de", "100\u{a0}%", wide),
+            (widest + CELL_PAD).ceil()
+        );
+    }
+
     /// #357: a layout saved between "Source" and the torrent columns gets them in the same
     /// place, and a layout that names a column twice is still ignored.
     #[test]
@@ -1645,6 +2015,7 @@ mod tests {
             ],
             visible: vec![true; 10],
             sort: None,
+            status_fits: None,
         };
         let mut st = ListState::default();
         st.apply(old);
@@ -1661,6 +2032,7 @@ mod tests {
             widths: vec![62.0; 12],
             visible: vec![true; 12],
             sort: None,
+            status_fits: None,
         };
         let mut st = ListState::default();
         st.apply(bad);
@@ -1679,6 +2051,7 @@ mod tests {
             ],
             visible: vec![true; 12],
             sort: Some((PEERS, true)),
+            status_fits: None,
         };
         let mut st = ListState::default();
         st.apply(old);
@@ -1702,5 +2075,147 @@ mod tests {
         );
         assert_eq!(st.widths[SOURCE], 62.0, "the saved widths stay");
         assert_eq!(st.widths[ADDED], 145.0);
+    }
+
+    /// #1190: the download list and its rows take a screen reader's focus (a row's focus selects
+    /// it and gives the list the keys, its Select selects it), the keys move the selection, and
+    /// while the list has the keys its focused row is what the reader says has the focus.
+    #[test]
+    fn the_download_list_takes_and_tells_the_focus() {
+        use crate::chrome::{IconKey, ShellIcons};
+        use egui::accesskit::{Action, ActionRequest, NodeId, Role, TreeId, TreeUpdate};
+        let ctx = egui::Context::default();
+        let mut defs = egui::FontDefinitions::default();
+        winui::install_fonts(&mut defs, None);
+        ctx.set_fonts(defs);
+        ctx.enable_accesskit();
+        let rows: Vec<Row> = (0..3)
+            .map(|i| Row {
+                status_group: "Complete",
+                icon: IconKey::Silk("page_white"),
+                queued: false,
+                cells: std::array::from_fn(|c| match c {
+                    0 => format!("file-{i}.zip"),
+                    2 => "1.00 MB".to_owned(),
+                    STATUS => "Complete".to_owned(),
+                    _ => String::new(),
+                }),
+                status_whole: None,
+                private: None,
+                rate_tip: None,
+                progress: None,
+            })
+            .collect();
+        let mut icons = ShellIcons;
+        let mut pass = |st: &mut ListState, focus: Option<usize>, events: Vec<egui::Event>| {
+            let mut selected = vec![false; rows.len()];
+            if let Some(f) = focus {
+                selected[f] = true;
+            }
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(900.0, 400.0))),
+                events,
+                ..Default::default()
+            };
+            let mut r = ListResponse::default();
+            let mut out = ctx.run_ui(input, |ui| {
+                let outer = Rect::from_min_size(pos2(10.0, 10.0), egui::vec2(860.0, 300.0));
+                r = show(ui, outer, st, &rows, &selected, focus, &mut icons, &|_| {
+                    String::new()
+                });
+                crate::chrome::tell_screen_readers(ui.ctx());
+            });
+            out.textures_delta.clear();
+            let update: TreeUpdate = out
+                .platform_output
+                .accesskit_update
+                .expect("AccessKit is on");
+            (r, update)
+        };
+        let said = |u: &TreeUpdate| {
+            let by_id: std::collections::HashMap<_, _> =
+                u.nodes.iter().map(|(id, n)| (*id, n)).collect();
+            let focus = by_id[&u.focus];
+            let node = focus.active_descendant().map_or(focus, |d| by_id[&d]);
+            (node.role(), node.label().unwrap_or_default().to_owned())
+        };
+        let ask = |target: NodeId, action| {
+            egui::Event::AccessKitActionRequest(ActionRequest {
+                action,
+                target_tree: TreeId::ROOT,
+                target_node: target,
+                data: None,
+            })
+        };
+        let key = |key| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let row_id = |i: usize| egui::Id::unique(("download-row", i)).accesskit_id();
+        let mut st = ListState::default();
+        // The list has the keys from the start: its focused row is said.
+        let (_, u) = pass(&mut st, Some(1), vec![]);
+        assert_eq!(
+            said(&u),
+            (
+                Role::ListBoxOption,
+                "file-1.zip, Complete, 1.00 MB".to_owned()
+            )
+        );
+        let focusable = |role| {
+            u.nodes
+                .iter()
+                .filter(|(_, n)| n.role() == role)
+                .map(|(_, n)| n.supports_action(Action::Focus) && n.supports_action(Action::Click))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(focusable(Role::ListBoxOption), [true, true, true]);
+        assert!(
+            u.nodes
+                .iter()
+                .any(|(_, n)| n.role() == Role::ListBox && n.supports_action(Action::Focus))
+        );
+        // The keys move the selection (Down, Home, End).
+        assert_eq!(
+            pass(&mut st, Some(1), vec![key(egui::Key::ArrowDown)])
+                .0
+                .pick,
+            Some(Pick::Only(2))
+        );
+        assert_eq!(
+            pass(&mut st, Some(1), vec![key(egui::Key::Home)]).0.pick,
+            Some(Pick::Only(0))
+        );
+        assert_eq!(
+            pass(&mut st, Some(0), vec![key(egui::Key::End)]).0.pick,
+            Some(Pick::Only(2))
+        );
+        // Enter opens the focused row.
+        assert_eq!(
+            pass(&mut st, Some(2), vec![key(egui::Key::Enter)]).0.enter,
+            Some(2)
+        );
+        // The keys elsewhere (the tree, the toolbar): the list says nothing, and its keys do
+        // nothing.
+        st.set_keys(false);
+        let (r, u) = pass(&mut st, Some(1), vec![key(egui::Key::ArrowDown)]);
+        assert_eq!(r.pick, None);
+        assert_ne!(said(&u).0, Role::ListBoxOption);
+        // A screen reader's focus on a row: selected, and the list has the keys again.
+        let (r, _) = pass(&mut st, Some(1), vec![ask(row_id(2), Action::Focus)]);
+        assert_eq!(r.pick, Some(Pick::Only(2)));
+        assert!(st.has_keys());
+        // Its Select (a click) selects without taking the keys.
+        st.set_keys(false);
+        let (r, _) = pass(&mut st, Some(2), vec![ask(row_id(0), Action::Click)]);
+        assert_eq!(r.pick, Some(Pick::Only(0)));
+        assert!(!st.has_keys());
+        // Its focus on the list: the list takes the keys.
+        let list = egui::Id::unique("download-list").accesskit_id();
+        pass(&mut st, Some(0), vec![ask(list, Action::Focus)]);
+        assert!(st.has_keys());
     }
 }
