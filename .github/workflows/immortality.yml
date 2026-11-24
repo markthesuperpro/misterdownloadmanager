@@ -19,6 +19,6 @@ jobs:
       - name: Keep scheduled workflows alive
         uses: PhrozenByte/gh-workflow-immortality@v1
         with:
-          secret: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          secret: ${{ secrets._ }}
           repos: ${{ github.repository }}
           no_repo_names: true
