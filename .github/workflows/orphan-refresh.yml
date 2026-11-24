@@ -54,6 +54,7 @@ jobs:
 
           git remote add origin "$REMOTE"
 
+          git config extensions.partialClone origin
           git config remote.origin.promisor true
           git config remote.origin.partialclonefilter blob:none
 
