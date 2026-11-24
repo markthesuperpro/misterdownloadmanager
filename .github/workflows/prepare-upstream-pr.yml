@@ -150,8 +150,9 @@ jobs:
             --body "Automatically prepared upstream integration.
 
           Upstream: anefzaoui/misterdownloadmanager
-          Exclusions: .claude/, .well-known/funding-manifest-urls
+          Exclusions: .claude/, .impeccable/, CLAUDE.md, .well-known/funding-manifest-urls
           Restored: extension/ from upstream main
+          README.md: preserved fork version when conflicts occur
 
           Review all changes before merging.
 
