@@ -27,7 +27,7 @@ jobs:
 
       - name: Amend and push when 50 days have elapsed
         env:
-          TARGET_BRANCH: YOUR_ORPHAN_BRANCH
+          TARGET_BRANCH: ORPHAN_BRANCH
         shell: bash
         run: |
           set -euo pipefail
