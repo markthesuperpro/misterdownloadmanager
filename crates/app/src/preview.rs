@@ -796,7 +796,7 @@ impl Cols {
 
 /// A label (muted) and its value, beside it or under it ([`Cols`]), the row's top at `y`; read
 /// by a screen reader as one line. Returns where the next row starts.
-fn field(ui: &mut Ui, c: Cols, y: f32, label: &str, value: &str, how: Value, salt: &str) -> f32 {
+fn field(ui: &mut Ui, c: Cols, y: f32, label: &str, value: &str, how: Value, id: &str) -> f32 {
     let p = ui.painter().clone();
     let label_base = y + 11.0;
     let (value_x, value_base) = match c.value_x {
@@ -812,7 +812,7 @@ fn field(ui: &mut Ui, c: Cols, y: f32, label: &str, value: &str, how: Value, sal
         label,
         winui::MUTED(),
         label_end,
-        ("preview-label", salt),
+        ("preview-label", id),
     );
     let color = match how {
         Value::Warning => winui::ERROR(),
@@ -829,9 +829,9 @@ fn field(ui: &mut Ui, c: Cols, y: f32, label: &str, value: &str, how: Value, sal
                 &data,
                 color,
                 c.x1,
-                ("preview-value", salt),
+                ("preview-value", id),
             );
-            winui::copyable(ui, rc, ("preview-copy", salt), value, false);
+            winui::copyable(ui, rc, ("preview-copy", id), value, false);
         }
         _ => {
             winui::fit(
@@ -842,7 +842,7 @@ fn field(ui: &mut Ui, c: Cols, y: f32, label: &str, value: &str, how: Value, sal
                 value,
                 color,
                 c.x1,
-                ("preview-value", salt),
+                ("preview-value", id),
             );
         }
     }
@@ -853,7 +853,7 @@ fn field(ui: &mut Ui, c: Cols, y: f32, label: &str, value: &str, how: Value, sal
     winui::readable(
         ui,
         rc,
-        ("preview-field", salt),
+        ("preview-field", id),
         &format!("{} {value}", label.trim()),
     );
     value_base + 4.0 + if c.value_x.is_some() { 5.0 } else { 8.0 }
@@ -896,6 +896,7 @@ fn one(ui: &mut Ui, x0: f32, x1: f32, y0: f32, item: &Item) -> f32 {
     let boxed = picture_box(x1 - x0, pic.as_ref().is_some_and(|s| !s.icon)).translate(vec2(x0, y0));
     let dir = matches!(presence, Presence::Found { dir: true, .. })
         || item.gallery.is_some()
+        || item.zip.is_some()
         || item.torrent.is_some() && Path::new(&item.file_name).extension().is_none();
     match pic {
         Some(s) if !s.icon => {
@@ -1042,10 +1043,7 @@ fn one(ui: &mut Ui, x0: f32, x1: f32, y0: f32, item: &Item) -> f32 {
         // i18n: label in the preview pane: whether the downloaded file is still where it was saved
         y = field(ui, c, y, crate::i18n::t("File:"), text, how, "presence");
     }
-    let folder = item
-        .dest
-        .parent()
-        .map_or_else(String::new, |d| d.display().to_string());
+    let folder = item.save_folder().display().to_string();
     y = field(
         ui,
         c,

@@ -284,6 +284,64 @@
   "popup_media_title_name": {
     "message": "मीडिया फ़ाइलों के नामों से पहले पेज का शीर्षक जोड़ें"
   },
+  "popup_images": {
+    "message": "इस पृष्ठ पर छवियाँ"
+  },
+  "popup_images_text": {
+    "message": "इस पृष्ठ की छवियों को सबसे बड़े आकार में ढूँढें, फिर अपनी इच्छित छवियों को लिंक ग्रैबर पर भेजें।"
+  },
+  "popup_images_find": {
+    "message": "छवियाँ ढूँढें"
+  },
+  "popup_images_min": {
+    "message": "पिक्सेल में सबसे छोटा आकार"
+  },
+  "popup_images_width": {
+    "message": "सबसे कम चौड़ाई, पिक्सेल में"
+  },
+  "popup_images_height": {
+    "message": "न्यूनतम ऊँचाई, पिक्सेल में"
+  },
+  "popup_images_types": {
+    "message": "छवि प्रकार"
+  },
+  "popup_images_other": {
+    "message": "अन्य"
+  },
+  "popup_images_count": {
+    "message": "$total$ में से $shown$ चयनित",
+    "placeholders": {
+      "shown": {
+        "content": "$1",
+        "example": "12"
+      },
+      "total": {
+        "content": "$2",
+        "example": "40"
+      }
+    }
+  },
+  "popup_images_unsized": {
+    "message": "आकार नहीं दिया गया, रखा गया: $n$",
+    "placeholders": {
+      "n": {
+        "content": "$1",
+        "example": "3"
+      }
+    }
+  },
+  "popup_images_send": {
+    "message": "लिंक ग्रैबर पर भेजें"
+  },
+  "popup_images_sent": {
+    "message": "लिंक ग्रैबर पर भेजा गया: वहाँ डाउनलोड करने के लिए छवियाँ चुनें।"
+  },
+  "popup_images_none": {
+    "message": "इस पृष्ठ पर कोई छवि नहीं मिली।"
+  },
+  "popup_images_unreadable": {
+    "message": "ब्राउज़र ऐड-ऑन को इस पृष्ठ को पढ़ने की अनुमति नहीं देता है।"
+  },
   "video_cant_save": {
     "message": "सहेजा नहीं जा सकता"
   },
@@ -792,5 +850,78 @@
   },
   "popup_video_reset_done": {
     "message": "अपने कोने में वापस, इसका मेनू हर साइट पर सब कुछ दिखा रहा है"
+  },
+  "status_links_sent": {
+    "message": "लिंक भेजे गए: $count$",
+    "placeholders": {
+      "count": {
+        "content": "$1",
+        "example": "10"
+      }
+    }
+  },
+  "status_links_cut": {
+    "message": "लिंक भेजे गए: $sent$, $left$ छोड़ दिए गए",
+    "placeholders": {
+      "sent": {
+        "content": "$1",
+        "example": "100"
+      },
+      "left": {
+        "content": "$2",
+        "example": "20"
+      }
+    }
+  },
+  "status_links_partial": {
+    "message": "लिंक भेजे गए: $sent$, अस्वीकार किए गए: $refused$",
+    "placeholders": {
+      "sent": {
+        "content": "$1",
+        "example": "5"
+      },
+      "refused": {
+        "content": "$2",
+        "example": "2"
+      }
+    }
+  },
+  "status_links_partial_cut": {
+    "message": "लिंक भेजे गए: $sent$, अस्वीकार किए गए: $refused$, $left$ छोड़ दिए गए",
+    "placeholders": {
+      "sent": {
+        "content": "$1",
+        "example": "5"
+      },
+      "refused": {
+        "content": "$2",
+        "example": "2"
+      },
+      "left": {
+        "content": "$3",
+        "example": "1"
+      }
+    }
+  },
+  "status_links_refused": {
+    "message": "लिंक अस्वीकार किए गए: $count$",
+    "placeholders": {
+      "count": {
+        "content": "$1",
+        "example": "3"
+      }
+    }
+  },
+  "status_links_none": {
+    "message": "कोई कैप्चर करने योग्य लिंक नहीं ($left$ छोड़ दिए गए)",
+    "placeholders": {
+      "left": {
+        "content": "$1",
+        "example": "5"
+      }
+    }
+  },
+  "status_unreachable": {
+    "message": "सर्वर तक नहीं पहुँचा जा सका"
   }
 }
