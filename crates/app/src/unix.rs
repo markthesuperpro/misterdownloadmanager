@@ -2,7 +2,7 @@
 //! starting with the session, the browsers' host registration, sounds, showing a file in its
 //! folder, and the torrent link handler. Each runs the system's own tool, so nothing here needs
 //! a library; the exceptions are the desktop's dark mode on Linux (D-Bus through zbus, the
-//! settings daemon's XSETTINGS through x11rb) and the
+//! settings daemon's XSETTINGS through x11rb), the dock's progress (zbus; AppKit on macOS) and the
 //! crash reports (at the end): signals and Mach exceptions through crash-handler, thread and
 //! process ids through libc.
 
@@ -181,7 +181,7 @@ pub async fn terminated() {
 // ---- The session's end (Linux: logging out, shutting down; a `kill`; the display going away) ---
 
 /// Linux: why MDM's session ends, as the system says it (Windows: `win32::SessionEnd`; macOS's
-/// logout quits the app through AppKit, which `App`'s drop saves, main.rs).
+/// logout quits the app through AppKit, which `App`'s drop saves, lib.rs).
 #[cfg(target_os = "linux")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionEnd {
@@ -244,7 +244,7 @@ fn ask_end(why: SessionEnd) -> bool {
 }
 
 /// Linux: the session's end that was asked for ([`on_session_end`]), for the window's thread to
-/// run at its next frame (main.rs).
+/// run at its next frame (lib.rs).
 #[cfg(target_os = "linux")]
 pub fn session_ending() -> Option<SessionEnd> {
     SessionEnd::of_code(END_ASKED.load(std::sync::atomic::Ordering::Acquire))
@@ -259,7 +259,7 @@ const END_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
 /// Linux: the session's end reaches MDM as a signal: logind's SIGTERM at logout and shutdown (and
 /// a `kill`), SIGHUP and SIGINT from the terminal it was started from. Each is run as Windows'
 /// session end is: `wake` brings the window's next frame, which saves as an Exit saves and ends
-/// MDM (main.rs). A signal ignored when MDM started (`nohup`'s SIGHUP, a background job's SIGINT)
+/// MDM (lib.rs). A signal ignored when MDM started (`nohup`'s SIGHUP, a background job's SIGINT)
 /// stays ignored. Ctrl+C once more ends MDM at once, and so does a window that hasn't ended
 /// within [`END_GRACE`]: then each download resumes from its last save, as before. Heard on
 /// `rt`, a signal handler itself only wakes it (tokio's).
@@ -342,7 +342,7 @@ fn wait_for_the_window(wake: &dyn Fn(), grace: Option<std::time::Duration>) {
 static WAKE: std::sync::OnceLock<std::sync::Arc<dyn Fn() + Send + Sync>> =
     std::sync::OnceLock::new();
 
-/// Linux: the process ends now, once the session's end has saved (main.rs), without the
+/// Linux: the process ends now, once the session's end has saved (lib.rs), without the
 /// libraries' exit handlers: with the display gone they would only touch it again, which runs
 /// Xlib's handler (and so the end) once more.
 #[cfg(target_os = "linux")]
@@ -972,6 +972,7 @@ pub fn os_version() -> String {
 }
 
 /// What `cmd` prints, trimmed, when it succeeds within `secs` seconds (`launch::output_within`).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn printed_within(cmd: &mut Command, secs: u64) -> Option<String> {
     crate::launch::output_within(cmd, std::time::Duration::from_secs(secs))
         .filter(|o| o.status.success())
@@ -2132,7 +2133,7 @@ fn xwayland_server() -> Result<bool, Box<dyn std::error::Error>> {
 static SAVED_PICK: std::sync::OnceLock<Option<crate::settings::WindowSystemPick>> =
     std::sync::OnceLock::new();
 
-/// Linux: View → Window system's saved choice (#624), for [`window_system`]: main.rs gives it
+/// Linux: View → Window system's saved choice (#624), for [`window_system`]: lib.rs gives it
 /// once the settings are read, before the first window opens.
 #[cfg(target_os = "linux")]
 pub fn set_window_system_pick(saved: Option<crate::settings::WindowSystemPick>) {
@@ -2385,6 +2386,125 @@ fn withdraw(window: u32) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Linux, X11 and XWayland: MDM's window titled `title` made a dialog of the main window
+/// (`dialogs::window_of_main`, #1839): its WM_TRANSIENT_FOR the main window and its type a
+/// dialog's (EWMH), so the window manager keeps it over the main window, centred on it, and out
+/// of the taskbar and the window switcher, as Windows does with the windows the main window owns.
+/// winit sets neither (it has no parent for a top-level window), and KDE Plasma showed each first
+/// start window as a program of its own. Said while the window is still hidden, before the window
+/// manager first maps it, or as soon as the main window is shown (the window managers read them
+/// again when they change: the first passes come before the main window is mapped). Some(true)
+/// once said; Some(false) when it can't be (Wayland, which lets a program say nothing of the kind
+/// through winit; an X11 error); None while the window isn't there yet or the main window isn't
+/// shown (minimized, in the notification area: a dialog of a hidden window would hide with it):
+/// the caller asks again on a later pass, for a while.
+#[cfg(target_os = "linux")]
+pub fn belong_to_main(title: &str) -> Option<bool> {
+    let main = MAIN_X11_WINDOW.load(std::sync::atomic::Ordering::Relaxed);
+    if main == 0 || on_wayland() {
+        return Some(false);
+    }
+    match make_transient(main, &crate::i18n::os_text(title)) {
+        Ok(Some(window)) => {
+            tracing::info!("window {title:?} (0x{window:x}): a dialog of the main window");
+            Some(true)
+        }
+        Ok(None) | Err(Transient::MainHidden) => None,
+        Err(Transient::X11(e)) => {
+            tracing::warn!("window {title:?} couldn't be made a dialog of the main window: {e}");
+            Some(false)
+        }
+    }
+}
+
+/// Why [`make_transient`] didn't.
+#[cfg(target_os = "linux")]
+enum Transient {
+    /// The main window isn't shown.
+    MainHidden,
+    X11(String),
+}
+
+#[cfg(target_os = "linux")]
+impl<E: std::error::Error> From<E> for Transient {
+    fn from(e: E) -> Self {
+        Transient::X11(e.to_string())
+    }
+}
+
+/// [`belong_to_main`]'s work, on a connection of MDM's own: this process's top-level window
+/// named `title` (the root window's child while the window manager hasn't framed it yet, in its
+/// list of windows, `_NET_CLIENT_LIST`, once it has), made the transient of `main`. The window's
+/// id once done; None when there is no such window yet.
+#[cfg(target_os = "linux")]
+fn make_transient(main: u32, title: &str) -> Result<Option<u32>, Transient> {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::{AtomEnum, ConnectionExt, MapState, PropMode};
+    use x11rb::wrapper::ConnectionExt as _;
+    let (conn, screen) = x11rb::rust_connection::RustConnection::connect(None)?;
+    let root = match conn.setup().roots.get(screen) {
+        Some(s) => s.root,
+        None => return Err(Transient::X11("no such screen".to_owned())),
+    };
+    if conn.get_window_attributes(main)?.reply()?.map_state != MapState::VIEWABLE {
+        return Err(Transient::MainHidden);
+    }
+    let atom = |name: &[u8]| -> Result<u32, Transient> {
+        Ok(conn.intern_atom(false, name)?.reply()?.atom)
+    };
+    let (pid_atom, name_atom, utf8) = (
+        atom(b"_NET_WM_PID")?,
+        atom(b"_NET_WM_NAME")?,
+        atom(b"UTF8_STRING")?,
+    );
+    let me = std::process::id();
+    let mut windows = conn.query_tree(root)?.reply()?.children;
+    let managed = conn
+        .get_property(
+            false,
+            root,
+            atom(b"_NET_CLIENT_LIST")?,
+            AtomEnum::WINDOW,
+            0,
+            4096,
+        )?
+        .reply()?;
+    windows.extend(managed.value32().into_iter().flatten());
+    for window in windows {
+        if window == main {
+            continue;
+        }
+        let pid = conn
+            .get_property(false, window, pid_atom, AtomEnum::CARDINAL, 0, 1)?
+            .reply()?;
+        if pid.value32().and_then(|mut v| v.next()) != Some(me) {
+            continue;
+        }
+        let name = conn
+            .get_property(false, window, name_atom, utf8, 0, 1024)?
+            .reply()?;
+        if name.value != title.as_bytes() {
+            continue;
+        }
+        conn.change_property32(
+            PropMode::REPLACE,
+            window,
+            AtomEnum::WM_TRANSIENT_FOR,
+            AtomEnum::WINDOW,
+            &[main],
+        )?;
+        let (kind, dialog) = (
+            atom(b"_NET_WM_WINDOW_TYPE")?,
+            atom(b"_NET_WM_WINDOW_TYPE_DIALOG")?,
+        );
+        conn.change_property32(PropMode::REPLACE, window, kind, AtomEnum::ATOM, &[dialog])?;
+        // A round trip: both reached the server before the connection closes.
+        conn.get_input_focus()?.reply()?;
+        return Ok(Some(window));
+    }
+    Ok(None)
+}
+
 /// Linux, XWayland only: a window of MDM's was clicked while it hasn't the keyboard (winit
 /// saw it lose the X input focus, or never get it), so the X server's input focus goes to it:
 /// to the window under the pointer, when it is MDM's and the focus is elsewhere. A window manager
@@ -2634,9 +2754,267 @@ pub fn tray_host() -> bool {
         .unwrap_or(false)
 }
 
+/// The X11/XWayland monitor nearest `at`, in physical screen pixels, intersected with the
+/// desktop's work area when available. Native Wayland cannot position these windows.
+#[cfg(target_os = "linux")]
+pub fn work_area(at: egui::Pos2) -> Option<egui::Rect> {
+    if on_wayland() {
+        return None;
+    }
+    // Dialogs can ask every frame. Refresh after a second so monitor/panel changes are picked
+    // up without opening an X connection for every frame.
+    type Areas = (std::time::Instant, Vec<egui::Rect>);
+    static AREAS: std::sync::Mutex<Option<Areas>> = std::sync::Mutex::new(None);
+    let mut cache = AREAS.lock().ok()?;
+    if cache
+        .as_ref()
+        .is_none_or(|(when, _)| when.elapsed() >= std::time::Duration::from_secs(1))
+    {
+        *cache = Some((
+            std::time::Instant::now(),
+            x11_work_areas().unwrap_or_default(),
+        ));
+    }
+    cache.as_ref()?.1.iter().copied().min_by(|a, b| {
+        a.distance_sq_to_pos(at)
+            .total_cmp(&b.distance_sq_to_pos(at))
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn x11_work_areas() -> Result<Vec<egui::Rect>, Box<dyn std::error::Error>> {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::{
+        randr,
+        xproto::{AtomEnum, ConnectionExt},
+    };
+    let (conn, screen) = x11rb::rust_connection::RustConnection::connect(None)?;
+    let screen = &conn.setup().roots[screen];
+    let rect = |x: f32, y: f32, w: f32, h: f32| {
+        egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(w, h))
+    };
+    let mut areas: Vec<_> = randr::get_monitors(&conn, screen.root, true)
+        .ok()
+        .and_then(|c| c.reply().ok())
+        .map(|reply| {
+            reply
+                .monitors
+                .into_iter()
+                .filter(|m| m.width > 0 && m.height > 0)
+                .map(|m| rect(m.x as f32, m.y as f32, m.width as f32, m.height as f32))
+                .collect()
+        })
+        .unwrap_or_default();
+    if areas.is_empty() {
+        areas.push(rect(
+            0.0,
+            0.0,
+            screen.width_in_pixels as f32,
+            screen.height_in_pixels as f32,
+        ));
+    }
+    let property = |name: &[u8]| -> Result<Vec<u32>, Box<dyn std::error::Error>> {
+        let atom = conn.intern_atom(true, name)?.reply()?.atom;
+        if atom == x11rb::NONE {
+            return Ok(Vec::new());
+        }
+        let reply = conn
+            .get_property(false, screen.root, atom, AtomEnum::CARDINAL, 0, 4096)?
+            .reply()?;
+        Ok(reply.value32().map(|v| v.collect()).unwrap_or_default())
+    };
+    // Some compositors (including Hyprland) publish one work area without a desktop index.
+    let desktop = property(b"_NET_CURRENT_DESKTOP")?
+        .first()
+        .copied()
+        .unwrap_or(0) as usize;
+    let work = property(b"_NET_WORKAREA")?;
+    if let Some(v) = desktop.checked_mul(4).and_then(|i| work.get(i..i + 4)) {
+        let work = rect(
+            v[0] as i32 as f32,
+            v[1] as i32 as f32,
+            v[2] as f32,
+            v[3] as f32,
+        );
+        for area in &mut areas {
+            let clipped = area.intersect(work);
+            if clipped.is_positive() {
+                *area = clipped;
+            }
+        }
+    }
+    Ok(areas)
+}
+
 /// `win32::on_a_screen`: winit has no monitor list before the window exists, so a saved
 /// position is trusted (the window manager keeps windows on screen on Linux and macOS).
 pub fn on_a_screen(_x: i32, _y: i32) -> bool {
+    true
+}
+
+// ---- Dock progress (sysprogress.rs, #1777) ----------------------------------------------------
+
+/// `win32::taskbar_progress` on Linux and macOS: the running downloads' progress on MDM's icon
+/// in the dock, cleared with `None`. Linux docks that read the launcher interface show it (Ubuntu
+/// Dock and Dash to Dock, KDE Plasma's task manager, Latte, Plank); others show nothing, as
+/// before. macOS draws it on MDM's Dock icon. Called every tick; only changes reach the system.
+pub fn dock_progress(progress: Option<f64>) {
+    thread_local! {
+        static SHOWN: std::cell::RefCell<crate::sysprogress::Shown> =
+            const { std::cell::RefCell::new(crate::sysprogress::Shown::new()) };
+    }
+    // During the thread's exit the cache may already be gone: nothing left to show then.
+    let _ = SHOWN.try_with(|shown| shown.borrow_mut().update(progress, show_dock_progress));
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn show_dock_progress(_value: Option<u32>) -> bool {
+    true
+}
+
+/// Linux: Unity's launcher interface (`com.canonical.Unity.LauncherEntry`), which the docks
+/// read: an `Update` signal naming MDM's desktop entry, with `progress` (0 to 1) and
+/// `progress-visible`. Sent from a thread of its own, since a stalled bus must not hold up the
+/// window; it sends only the latest value, and sends a shown one again every few seconds for a
+/// dock that started (or restarted) after it. When MDM ends, its bus name goes away and the docks
+/// drop its progress themselves.
+#[cfg(target_os = "linux")]
+fn show_dock_progress(value: Option<u32>) -> bool {
+    use std::sync::mpsc;
+    static SENDER: std::sync::OnceLock<mpsc::Sender<Option<u32>>> = std::sync::OnceLock::new();
+    let sender = SENDER.get_or_init(|| {
+        let (tx, rx) = mpsc::channel::<Option<u32>>();
+        let _ = std::thread::Builder::new()
+            .name("dock-progress".into())
+            .spawn(move || {
+                if let Err(e) = launcher_entry_loop(&rx) {
+                    tracing::info!("dock progress: stopped ({e})");
+                }
+            });
+        tx
+    });
+    // A thread that found no bus has ended: this fails, and the next tick tries again (cheaply).
+    sender.send(value).is_ok()
+}
+
+#[cfg(target_os = "linux")]
+fn launcher_entry_loop(rx: &std::sync::mpsc::Receiver<Option<u32>>) -> zbus::Result<()> {
+    use std::sync::mpsc::RecvTimeoutError;
+    use zbus::zvariant::Value;
+    const AGAIN: std::time::Duration = std::time::Duration::from_secs(5);
+    let conn = zbus::blocking::Connection::session()?;
+    let uri = format!("application://{}", desktop_entry_id());
+    let mut last: Option<u32> = None;
+    loop {
+        let mut value = match rx.recv_timeout(AGAIN) {
+            Ok(value) => value,
+            // Nothing new: a shown bar again, for a dock that wasn't listening.
+            Err(RecvTimeoutError::Timeout) if last.is_some() => last,
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) => return Ok(()),
+        };
+        // Only the latest value matters.
+        while let Ok(newer) = rx.try_recv() {
+            value = newer;
+        }
+        let fraction = f64::from(value.unwrap_or(0)) / f64::from(crate::sysprogress::STEPS);
+        let properties: std::collections::HashMap<&str, Value> = [
+            ("progress", Value::from(fraction)),
+            ("progress-visible", Value::from(value.is_some())),
+        ]
+        .into_iter()
+        .collect();
+        conn.emit_signal(
+            None::<&str>,
+            "/com/canonical/unity/launcherentry/misterdownloadmanager",
+            "com.canonical.Unity.LauncherEntry",
+            "Update",
+            &(uri.as_str(), properties),
+        )?;
+        last = value;
+    }
+}
+
+/// The desktop entry the docks know MDM by: `misterdownloadmanager.desktop`, the one the packages
+/// install (tools/installer/build-linux.sh), unless the launcher that started this very process
+/// named another (GLib's launchers, GNOME's among them, say which entry they started: an AppImage
+/// manager's renamed copy, for one). Only for this process: a terminal opened from the dock passes
+/// its own entry on to whatever runs in it.
+#[cfg(target_os = "linux")]
+fn desktop_entry_id() -> String {
+    launched_entry(
+        std::env::var_os("GIO_LAUNCHED_DESKTOP_FILE").as_deref(),
+        std::env::var("GIO_LAUNCHED_DESKTOP_FILE_PID")
+            .ok()
+            .as_deref(),
+        std::process::id(),
+    )
+    .unwrap_or_else(|| format!("{}.desktop", crate::APP_ID))
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn launched_entry(file: Option<&std::ffi::OsStr>, pid: Option<&str>, ours: u32) -> Option<String> {
+    if pid?.trim().parse::<u32>().ok()? != ours {
+        return None;
+    }
+    let name = Path::new(file?).file_name()?.to_str()?;
+    (name.len() > ".desktop".len() && name.ends_with(".desktop")).then(|| name.to_owned())
+}
+
+/// macOS: MDM's Dock icon with a bar along its bottom (the tile's content view, drawn by
+/// `display`); `None` gives the tile back its plain icon. AppKit on the main thread only, as
+/// [`ns_app`] says: elsewhere there is nothing to draw.
+#[cfg(target_os = "macos")]
+fn show_dock_progress(value: Option<u32>) -> bool {
+    use objc2::MainThreadOnly as _;
+    use objc2::rc::Retained;
+    use objc2_app_kit::{
+        NSApplication, NSImageView, NSProgressIndicator, NSProgressIndicatorStyle, NSView,
+    };
+    use objc2_foundation::{NSPoint, NSRect, NSSize};
+    type Views = Option<(Retained<NSImageView>, Retained<NSProgressIndicator>)>;
+    thread_local! {
+        static VIEWS: std::cell::RefCell<Views> = const { std::cell::RefCell::new(None) };
+    }
+    let Some(mtm) = objc2::MainThreadMarker::new() else {
+        return true;
+    };
+    let app = NSApplication::sharedApplication(mtm);
+    let tile = app.dockTile();
+    let Some(value) = value else {
+        tile.setContentView(None);
+        tile.display();
+        return true;
+    };
+    VIEWS.with_borrow_mut(|views| {
+        if views.is_none() {
+            let Some(icon) = app.applicationIconImage() else {
+                return;
+            };
+            let size = tile.size();
+            let view = NSImageView::imageViewWithImage(&icon, mtm);
+            view.setFrame(NSRect::new(NSPoint::new(0.0, 0.0), size));
+            // Along the bottom (AppKit's views count up from there), inside the icon's margin.
+            let bar_frame = NSRect::new(
+                NSPoint::new(size.width * 0.1, size.height * 0.06),
+                NSSize::new(size.width * 0.8, size.height * 0.14),
+            );
+            let bar =
+                NSProgressIndicator::initWithFrame(NSProgressIndicator::alloc(mtm), bar_frame);
+            bar.setStyle(NSProgressIndicatorStyle::Bar);
+            bar.setIndeterminate(false);
+            bar.setMinValue(0.0);
+            bar.setMaxValue(f64::from(crate::sysprogress::STEPS));
+            view.addSubview(&bar);
+            *views = Some((view, bar));
+        }
+        if let Some((view, bar)) = views.as_ref() {
+            bar.setDoubleValue(f64::from(value));
+            let view: &NSView = view;
+            tile.setContentView(Some(view));
+            tile.display();
+        }
+    });
     true
 }
 
@@ -3932,6 +4310,48 @@ fn set_xattr(path: &Path, name: &str, value: &str) {
     };
 }
 
+/// Tests: one extended attribute of `path` (`webmark::assert_marked`): None when it has none of
+/// that name; `Err` when its file system takes none at all (ENOTSUP) or it can't be read.
+#[cfg(test)]
+#[allow(unsafe_code)]
+pub fn xattr(path: &Path, name: &str) -> std::io::Result<Option<String>> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    let invalid = |_| std::io::Error::from(std::io::ErrorKind::InvalidInput);
+    let p = CString::new(path.as_os_str().as_bytes()).map_err(invalid)?;
+    let n = CString::new(name).map_err(invalid)?;
+    let mut buf = vec![0u8; 4096];
+    // SAFETY: both strings are NUL-terminated and live through the call, which writes at most
+    // `buf.len()` bytes into `buf`.
+    #[cfg(target_os = "macos")]
+    let got = unsafe {
+        libc::getxattr(
+            p.as_ptr(),
+            n.as_ptr(),
+            buf.as_mut_ptr().cast(),
+            buf.len(),
+            0,
+            0,
+        )
+    };
+    #[cfg(not(target_os = "macos"))]
+    let got = unsafe { libc::getxattr(p.as_ptr(), n.as_ptr(), buf.as_mut_ptr().cast(), buf.len()) };
+    let Ok(len) = usize::try_from(got) else {
+        let e = std::io::Error::last_os_error();
+        #[cfg(target_os = "macos")]
+        let missing = libc::ENOATTR;
+        #[cfg(not(target_os = "macos"))]
+        let missing = libc::ENODATA;
+        return if e.raw_os_error() == Some(missing) {
+            Ok(None)
+        } else {
+            Err(e)
+        };
+    };
+    buf.truncate(len);
+    Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
+}
+
 /// macOS: `NSApp` (`NSApplication.sharedApplication`), or `None` off the main thread. AppKit is
 /// used from the main thread only, and the first `sharedApplication` makes the application: made
 /// on another thread it traps (SIGTRAP) and the whole program ends. The windows' thread is the
@@ -4455,6 +4875,10 @@ pub fn rename_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
                 return Err(err);
             }
         }
+        // Android: the fallback alone (its app sandbox's system call filter isn't relied on for
+        // renameat2).
+        #[cfg(target_os = "android")]
+        let _ = (from_c, to_c);
 
         fallback_rename_no_replace(from, to)
     }
@@ -4528,9 +4952,41 @@ mod macos_focus_tests {
                 None
             );
             assert_eq!(super::macos_window_miniaturized("Download File Info"), None);
+            super::dock_progress(Some(0.5));
+            super::dock_progress(None);
         })
         .join()
         .expect("nothing traps or panics");
+    }
+}
+
+#[cfg(test)]
+mod dock_progress_tests {
+    use std::ffi::OsStr;
+
+    use super::launched_entry;
+
+    /// The entry a launcher named counts only for the process it started (#1777).
+    #[test]
+    fn the_launched_entry_is_ours_only_when_its_pid_is() {
+        let renamed = OsStr::new("/home/u/.local/share/applications/appimagekit_0f-mdm.desktop");
+        assert_eq!(
+            launched_entry(Some(renamed), Some("4242"), 4242).as_deref(),
+            Some("appimagekit_0f-mdm.desktop")
+        );
+        // A terminal started from the dock hands its own entry down to what runs in it.
+        let terminal = OsStr::new("/usr/share/applications/org.gnome.Terminal.desktop");
+        assert_eq!(launched_entry(Some(terminal), Some("4000"), 4242), None);
+        assert_eq!(launched_entry(Some(terminal), None, 4242), None);
+        assert_eq!(launched_entry(None, Some("4242"), 4242), None);
+        assert_eq!(
+            launched_entry(Some(OsStr::new("/tmp/notes.txt")), Some("4242"), 4242),
+            None
+        );
+        assert_eq!(
+            launched_entry(Some(OsStr::new("/x/.desktop")), Some("4242"), 4242),
+            None
+        );
     }
 }
 
@@ -5260,6 +5716,171 @@ mod host_copy_tests {
     }
 }
 
+// ---- pop-ups that wait (#1773, hold.rs) ---------------------------------------------------
+
+/// The session's lock as logind last said it (`LockedHint`): 0 not known, 1 unlocked, 2 locked.
+#[cfg(target_os = "linux")]
+static SESSION_LOCKED: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Linux: why MDM's pop-ups wait now: the session locked (logind's `LockedHint`, which GNOME's
+/// and KDE's lock screens set), or the active X11 window full screen (`_NET_WM_STATE_FULLSCREEN`:
+/// a game, a video, a presentation; on Wayland, the programs that run on XWayland, as most games
+/// do). A Wayland program's own full screen can't be seen: Wayland tells no program about
+/// another's windows. Nor is the desktop's idle inhibition taken for "busy": a video playing in a
+/// window, or music, holds it too. None where neither can be known: pop-ups show as before.
+#[cfg(target_os = "linux")]
+pub fn pop_ups_wait() -> Option<crate::hold::Busy> {
+    watch_session_lock();
+    if SESSION_LOCKED.load(std::sync::atomic::Ordering::Relaxed) == 2 {
+        return Some(crate::hold::Busy::Away);
+    }
+    active_window_full_screen().then_some(crate::hold::Busy::FullScreen)
+}
+
+/// Follows logind's `LockedHint` for this session on a thread of its own, from the first call.
+#[cfg(target_os = "linux")]
+fn watch_session_lock() {
+    static WATCH: std::sync::Once = std::sync::Once::new();
+    WATCH.call_once(|| {
+        let _ = std::thread::Builder::new()
+            .name("session-lock".into())
+            .spawn(|| {
+                let set = |locked: bool| {
+                    let v = if locked { 2 } else { 1 };
+                    if SESSION_LOCKED.swap(v, std::sync::atomic::Ordering::Relaxed) != v {
+                        tracing::info!(
+                            "the session is {}",
+                            if locked { "locked" } else { "unlocked" }
+                        );
+                    }
+                };
+                let watch = || -> zbus::Result<()> {
+                    let conn = zbus::blocking::Connection::system()?;
+                    // The user's graphical session, whose screen locks (logind's `User.Display`);
+                    // else "auto": this program's session, or its user's graphical one when the
+                    // program runs outside a session (started by the desktop's systemd user
+                    // manager); "self" on a logind before "auto". The program's own session can
+                    // be another one, without a screen (a remote login that started it).
+                    let display = zbus::blocking::Proxy::new(
+                        &conn,
+                        "org.freedesktop.login1",
+                        "/org/freedesktop/login1/user/self",
+                        "org.freedesktop.login1.User",
+                    )
+                    .and_then(|user| {
+                        user.get_property::<(String, zbus::zvariant::OwnedObjectPath)>("Display")
+                    })
+                    .ok()
+                    .map(|(_, path)| path.to_string())
+                    .filter(|path| path != "/");
+                    let session = display
+                        .into_iter()
+                        .chain([
+                            "/org/freedesktop/login1/session/auto".to_owned(),
+                            "/org/freedesktop/login1/session/self".to_owned(),
+                        ])
+                        .find_map(|path| {
+                            let p = zbus::blocking::Proxy::new(
+                                &conn,
+                                "org.freedesktop.login1",
+                                path.clone(),
+                                "org.freedesktop.login1.Session",
+                            )
+                            .ok()?;
+                            let now = p.get_property::<bool>("LockedHint").ok()?;
+                            Some((p, now, path))
+                        });
+                    let Some((session, now, path)) = session else {
+                        return Err(zbus::Error::Failure("no session of logind's".into()));
+                    };
+                    tracing::info!("the session's lock: followed on {path}");
+                    set(now);
+                    for change in session.receive_property_changed::<bool>("LockedHint") {
+                        set(change.get()?);
+                    }
+                    Ok(())
+                };
+                if let Err(e) = watch() {
+                    tracing::info!("the session's lock isn't known: {e}");
+                }
+            });
+    });
+}
+
+/// The X server's connection for [`active_window_full_screen`], and the atoms it asks with.
+#[cfg(target_os = "linux")]
+struct FullScreenLook {
+    conn: x11rb::rust_connection::RustConnection,
+    root: u32,
+    active: u32,
+    state: u32,
+    full: u32,
+}
+
+/// Whether the X server's active window is full screen (EWMH). False without an X server.
+#[cfg(target_os = "linux")]
+fn active_window_full_screen() -> bool {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::{AtomEnum, ConnectionExt};
+    // Not tried yet: None; no X server: Some(None).
+    static X11: std::sync::Mutex<Option<Option<FullScreenLook>>> = std::sync::Mutex::new(None);
+    if std::env::var_os("DISPLAY").is_none_or(|d| d.is_empty()) {
+        return false;
+    }
+    let Ok(mut x11) = X11.lock() else {
+        return false;
+    };
+    let connect = || -> Result<FullScreenLook, Box<dyn std::error::Error>> {
+        let (conn, screen) = x11rb::rust_connection::RustConnection::connect(None)?;
+        let atom = |name: &[u8]| -> Result<u32, Box<dyn std::error::Error>> {
+            Ok(conn.intern_atom(false, name)?.reply()?.atom)
+        };
+        let (active, state, full) = (
+            atom(b"_NET_ACTIVE_WINDOW")?,
+            atom(b"_NET_WM_STATE")?,
+            atom(b"_NET_WM_STATE_FULLSCREEN")?,
+        );
+        let root = conn.setup().roots[screen].root;
+        Ok(FullScreenLook {
+            conn,
+            root,
+            active,
+            state,
+            full,
+        })
+    };
+    let look = x11.get_or_insert_with(|| connect().ok());
+    let Some(x) = look.as_ref() else {
+        return false;
+    };
+    let ask = || -> Result<bool, Box<dyn std::error::Error>> {
+        let active = x
+            .conn
+            .get_property(false, x.root, x.active, AtomEnum::WINDOW, 0, 1)?
+            .reply()?;
+        let Some(window) = active.value32().and_then(|mut v| v.next()) else {
+            return Ok(false);
+        };
+        if window == x11rb::NONE {
+            return Ok(false);
+        }
+        let state = x
+            .conn
+            .get_property(false, window, x.state, AtomEnum::ATOM, 0, 64)?
+            .reply()?;
+        Ok(state.value32().is_some_and(|mut v| v.any(|a| a == x.full)))
+    };
+    match ask() {
+        Ok(full) => full,
+        Err(_) => {
+            // A window gone between the two questions, or the connection lost: asked again
+            // next time, over a new connection.
+            *x11 = None;
+            false
+        }
+    }
+}
+
 #[cfg(test)]
 mod startup_tests {
     use super::{DELETED, StartupState, entry_program, present, startup_entry, startup_state};
@@ -5430,6 +6051,13 @@ mod startup_tests {
 // (desktops that log in on their own often have a locked keyring, #164), so a locked or missing
 // keyring leaves the secrets in the owner-only settings. macOS: the login keychain's generic
 // passwords (SecItemAdd / SecItemCopyMatching, through security-framework).
+
+// Android: the keystore, exact alarms and wake locks, which the Android app holds (android.rs).
+#[cfg(target_os = "android")]
+pub use crate::android::{
+    default_browser, file_icon, keep_awake, keychain_delete, keychain_list, keychain_probe,
+    keychain_read, keychain_write, thumbnail, wake_at,
+};
 
 #[cfg(target_os = "linux")]
 pub use secret_service::{
@@ -5756,6 +6384,11 @@ pub fn wake_support() -> crate::wake::Support {
     #[cfg(target_os = "macos")]
     {
         crate::wake::Support::MacAdmin
+    }
+    // Android: an exact alarm starts the app, once the Android app is there to set it.
+    #[cfg(target_os = "android")]
+    {
+        crate::android::wake_support()
     }
 }
 

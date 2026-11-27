@@ -276,6 +276,131 @@ pub fn banner(
     extra
 }
 
+/// How tall [`steps`] is.
+pub const STEPS_H: f32 = 36.0;
+
+/// The steps of a window that goes through them one after the other (the first start's setup,
+/// setup.rs), on one line from English `y` under origin `o`, `w` wide: each step's number in a
+/// circle and its name, joined by lines. The steps done are the accent's circle with a tick, the
+/// current one the accent's circle with its number and its name in bold, the ones to come an
+/// outline in the muted colour: the accent button's colours (one blue, Windows 11's stepper, in
+/// both modes; a theme's own accent button where it has one, its text readable on it). A screen reader
+/// reads "Step 2 of 3: …" (`step_of`: that sentence, translated by the caller).
+#[allow(clippy::too_many_arguments)]
+pub fn steps(
+    ui: &Ui,
+    p: &Painter,
+    o: Pos2,
+    w: f32,
+    y: f32,
+    names: &[&str],
+    current: usize,
+    step_of: &str,
+) {
+    const D: f32 = 20.0;
+    const GAP: f32 = 6.0;
+    const MARGIN: f32 = 18.0;
+    let c = crate::theme::colors();
+    let n = names.len();
+    if n == 0 {
+        return;
+    }
+    let font = |k: usize| {
+        if k == current {
+            tahoma_bold()
+        } else {
+            tahoma()
+        }
+    };
+    // The names whole when they fit with a line of at least 16 px between steps; else each cut to
+    // its share.
+    let links = (n - 1) as f32;
+    let room = w - 2.0 * MARGIN - n as f32 * (D + GAP) - links * 16.0;
+    let widths: Vec<f32> = (0..n)
+        .map(|k| text_width_font(p, font(k), names[k]))
+        .collect();
+    let total: f32 = widths.iter().sum();
+    let shown: Vec<String> = (0..n)
+        .map(|k| {
+            if total <= room {
+                names[k].to_owned()
+            } else {
+                ellipsize(p, &font(k), names[k], (room / n as f32).max(24.0))
+            }
+        })
+        .collect();
+    let shown_w: Vec<f32> = (0..n)
+        .map(|k| text_width_font(p, font(k), &shown[k]))
+        .collect();
+    let used: f32 = shown_w.iter().map(|t| D + GAP + t).sum();
+    let link = if n > 1 {
+        ((w - 2.0 * MARGIN - used) / links).max(16.0)
+    } else {
+        0.0
+    };
+    let cy = y + STEPS_H / 2.0;
+    let mut x = MARGIN;
+    for k in 0..n {
+        let circle = rect(Rect::from_min_size(
+            pos2(o.x + x, o.y + cy - D / 2.0),
+            vec2(D, D),
+        ));
+        if k <= current {
+            p.circle_filled(circle.center(), D / 2.0, c.button_accent);
+        } else {
+            p.circle_stroke(
+                circle.center(),
+                D / 2.0 - 0.5,
+                egui::Stroke::new(1.0, c.muted),
+            );
+        }
+        if k < current {
+            // A tick, drawn: the same in every font.
+            let m = circle.center();
+            let tick = [
+                pos2(m.x - 4.5, m.y + 0.5),
+                pos2(m.x - 1.5, m.y + 3.5),
+                pos2(m.x + 4.5, m.y - 3.0),
+            ];
+            p.line(tick.to_vec(), egui::Stroke::new(1.6, c.button_accent_text));
+        } else {
+            let number = crate::i18n::integer(k as u64 + 1);
+            let color = if k == current {
+                c.button_accent_text
+            } else {
+                c.muted
+            };
+            let g = galley(p, tahoma_bold(), &number, color);
+            let at = circle.center() - g.size() / 2.0;
+            p.galley(pos2(at.x.round(), at.y.round()), g, color);
+        }
+        x += D + GAP;
+        let color = if k <= current { TEXT() } else { MUTED() };
+        let drawn = text_font(p, font(k), o.x + x, o.y + cy + 4.0, &shown[k], color);
+        if shown[k] != names[k] {
+            full_on_hover(ui, drawn, ("steps", k), names[k]);
+        }
+        x += shown_w[k];
+        if k + 1 < n {
+            let line = if k < current {
+                c.button_accent
+            } else {
+                c.list_frame
+            };
+            let (x0, x1) = (o.x + x + 8.0, o.x + x + link - 8.0);
+            if x1 > x0 {
+                let rc = rect(Rect::from_min_max(
+                    pos2(x0, o.y + cy),
+                    pos2(x1, o.y + cy + 1.0),
+                ));
+                p.rect_filled(rc, 0.0, line);
+            }
+            x += link;
+        }
+    }
+    readable(ui, r(o, 0.0, y, w, STEPS_H), "steps", step_of);
+}
+
 /// A separator dot between two parts of a line ("Germany · about 35 ms"), at English `x`: a
 /// round 3 px dot on the middle of the lowercase letters. The font's "·" is a thin tick sitting
 /// high at small sizes, which reads as an apostrophe. Its rect on screen.
@@ -339,6 +464,14 @@ pub fn name(resp: &Response, name: &str) {
         .accesskit_node_builder(resp.id, |node| node.set_label(name.to_owned()));
 }
 
+/// A control's place among its siblings ("tab 3 of 12"): AccessKit counts from 0.
+pub fn position_in_set(resp: &Response, i: usize, n: usize) {
+    resp.ctx.accesskit_node_builder(resp.id, |node| {
+        node.set_position_in_set(i);
+        node.set_size_of_set(n);
+    });
+}
+
 /// A text box's or drop-down's name for screen readers, from its caption ([`caption_for`]).
 fn name_from_caption(resp: &Response) {
     if let Some(name) = caption_for(&resp.ctx, resp.rect) {
@@ -355,6 +488,16 @@ pub fn segoe() -> FontId {
         crate::palette::UiFont::System => FontId::proportional(size),
         crate::palette::UiFont::Tahoma => FontId::new(size, FontFamily::Name("tahoma".into())),
     }
+}
+
+/// The computer's own interface font (Segoe UI on Windows), whatever View → Font chose: the
+/// "System font" menu item is drawn in it, so it stays readable when a chosen file isn't
+/// (#1489).
+pub fn system_font() -> FontId {
+    FontId::new(
+        crate::theme::font_size(crate::theme::metrics().font_ui),
+        FontFamily::Name("system-ui".into()),
+    )
 }
 
 /// Arial Bold −13: the Categories close "x".
@@ -921,6 +1064,66 @@ pub fn paragraph(
     lines.len()
 }
 
+/// [`paragraph`] that stays above `bottom`, the last row of the room its page gives it: the lines
+/// that fit are drawn, the last one cut with "..." when more were coming, and the whole text on
+/// hover. For a note at the bottom of a page that a longer translation outgrows.
+#[allow(clippy::too_many_arguments)]
+pub fn paragraph_until(
+    ui: &Ui,
+    p: &Painter,
+    x: f32,
+    baseline: f32,
+    s: &str,
+    color: Color32,
+    right: f32,
+    bottom: f32,
+    line_h: f32,
+) -> usize {
+    let flowed;
+    let s = if crate::i18n::code() == "en" {
+        s
+    } else {
+        flowed = reflow(s);
+        flowed.as_str()
+    };
+    let room = (right - x).max(1.0);
+    let lines = wrap_lines(p, s, room);
+    let shown = lines_until(p, &lines, lines_that_fit(baseline, bottom, line_h), room);
+    for (i, l) in shown.iter().enumerate() {
+        text(p, x, baseline + line_h * i as f32, l, color);
+    }
+    if shown.len() < lines.len() {
+        // The whole note, over any of its lines.
+        let whole = rect(Rect::from_min_max(
+            pos2(x, baseline - line_h),
+            pos2(
+                right,
+                baseline + line_h * (shown.len().saturating_sub(1)) as f32 + 4.0,
+            ),
+        ));
+        full_on_hover(ui, whole, ("note-until", x as i32, baseline as i32), s);
+    }
+    shown.len()
+}
+
+/// How many lines `line_h` apart, the first at `baseline`, end above `bottom`: a line's
+/// descender keeps clear of the edge below it. Always one, for a room of no height.
+fn lines_that_fit(baseline: f32, bottom: f32, line_h: f32) -> usize {
+    let rows = (bottom - baseline - 4.0) / line_h.max(1.0);
+    rows.floor().max(0.0) as usize + 1
+}
+
+/// The first `fits` of `lines`, the last cut with "..." when some were left out.
+fn lines_until(p: &Painter, lines: &[String], fits: usize, room: f32) -> Vec<String> {
+    let mut shown: Vec<String> = lines.iter().take(fits.max(1)).cloned().collect();
+    if lines.len() > shown.len()
+        && let Some(last) = shown.last_mut()
+    {
+        *last = ellipsize(p, &tahoma(), &format!("{last} ..."), room);
+    }
+    shown
+}
+
 /// Data shown as it is (a crash report, release notes), from English `x` to `right`, first
 /// baseline at `baseline`, `line_h` apart; returns the lines drawn. Its line breaks are its own
 /// in every language (a line longer than the room wraps, as in [`paragraph`]), and it reads left
@@ -1459,15 +1662,13 @@ fn window_edges(p: &Painter) -> (f32, f32) {
 
 /// A tooltip with the whole of a cut text while the pointer is over it (as Windows shows
 /// for truncated list items).
-pub fn full_on_hover(
-    ui: &Ui,
-    rect: Rect,
-    salt: impl std::hash::Hash + std::fmt::Debug,
-    full: &str,
-) {
-    let id = ui.scope_id().with(("full-text", salt));
-    ui.interact(rect, id, egui::Sense::hover())
-        .on_hover_text(full);
+pub fn full_on_hover(ui: &Ui, rect: Rect, id: impl std::hash::Hash + std::fmt::Debug, full: &str) {
+    ui.interact(
+        rect,
+        ui.scope_id().with(("full-text", id)),
+        egui::Sense::hover(),
+    )
+    .on_hover_text(full);
 }
 
 // ---- row list -------------------------------------------------------------------------------
@@ -1896,10 +2097,10 @@ pub fn row_list(
 
 /// Text that opens or does something when clicked: link colour, underlined under the pointer.
 /// `label` is English (translated here).
-pub fn link(ui: &Ui, p: &Painter, x: f32, baseline: f32, label: &str, salt: &str) -> bool {
+pub fn link(ui: &Ui, p: &Painter, x: f32, baseline: f32, label: &str, id: &str) -> bool {
     let rect = text(p, x, baseline, crate::i18n::t(label), LINK());
     let resp = ui
-        .interact(rect, ui.scope_id().with(("link", salt)), Sense::click())
+        .interact(rect, ui.scope_id().with(("link", id)), Sense::click())
         .on_hover_cursor(egui::CursorIcon::PointingHand);
     expose(&resp, egui::Role::Link, crate::i18n::t(label), true, None);
     // A Tab stop shows that it has the keys.
@@ -1918,7 +2119,7 @@ pub fn link(ui: &Ui, p: &Painter, x: f32, baseline: f32, label: &str, salt: &str
 /// first baseline `baseline`, with a [`link`] after it (`label`, English, translated here): on
 /// the note's line when they fit together, else the note wraps and the link ends its second
 /// line. A note longer than that is cut, and shown whole on hover. True when the link is
-/// clicked; `salt` tells notes apart.
+/// clicked; `id` tells notes apart.
 #[allow(clippy::too_many_arguments)]
 pub fn note_with_link(
     ui: &Ui,
@@ -1930,13 +2131,13 @@ pub fn note_with_link(
     color: Color32,
     right: f32,
     label: &str,
-    salt: &str,
+    id: &str,
 ) -> bool {
     const GAP: f32 = 8.0;
     let link_w = text_width(p, crate::i18n::t(label));
     if text_width(p, s) + GAP + link_w <= right - x {
         text(p, x, baseline, s, color);
-        return link(ui, p, x + text_width(p, s) + GAP, baseline, label, salt);
+        return link(ui, p, x + text_width(p, s) + GAP, baseline, label, id);
     }
     let lines = wrap_lines(p, s, (right - x).max(1.0));
     let first = lines.first().map_or("", String::as_str);
@@ -1945,10 +2146,10 @@ pub fn note_with_link(
     let second = baseline + line_h;
     let (rest_rect, cut) = text_fit(p, x, second, &rest, color, right - GAP - link_w);
     if cut {
-        full_on_hover(ui, first_rect.union(rest_rect), (salt, "note"), s);
+        full_on_hover(ui, first_rect.union(rest_rect), (id, "note"), s);
     }
     let rest_w = text_width(p, &rest).min(right - GAP - link_w - x);
-    link(ui, p, x + rest_w + GAP, second, label, salt)
+    link(ui, p, x + rest_w + GAP, second, label, id)
 }
 
 /// A disabled control says why on hover: `reason` (English, translated here) while `disabled`.
@@ -1961,7 +2162,7 @@ pub fn why_disabled(resp: Response, disabled: bool, reason: &str) -> Response {
 }
 
 /// [`text_fit`] that shows the whole text on hover whenever it cut it: the one way to draw a
-/// line that may not fit (no caller can forget the hover). `salt` tells the lines apart.
+/// line that may not fit (no caller can forget the hover). `id` tells the lines apart.
 #[allow(clippy::too_many_arguments)]
 pub fn fit(
     ui: &Ui,
@@ -1971,9 +2172,9 @@ pub fn fit(
     s: &str,
     color: Color32,
     right: f32,
-    salt: impl std::hash::Hash + std::fmt::Debug,
+    id: impl std::hash::Hash + std::fmt::Debug,
 ) -> Rect {
-    fit_whole(ui, p, x, baseline, s, s, color, right, salt)
+    fit_whole(ui, p, x, baseline, s, s, color, right, id)
 }
 
 /// [`fit`] for a cell that shows one text and tips another: the Link grabber's Status says a
@@ -1988,11 +2189,11 @@ pub fn fit_whole(
     full: &str,
     color: Color32,
     right: f32,
-    salt: impl std::hash::Hash + std::fmt::Debug,
+    id: impl std::hash::Hash + std::fmt::Debug,
 ) -> Rect {
     let (rect, cut) = text_fit(p, x, baseline, shown, color, right);
     if cut || shown != full {
-        full_on_hover(ui, rect, salt, full);
+        full_on_hover(ui, rect, id, full);
     }
     rect
 }
@@ -2008,12 +2209,12 @@ pub fn fit_middle(
     s: &str,
     color: Color32,
     right: f32,
-    salt: impl std::hash::Hash + std::fmt::Debug,
+    id: impl std::hash::Hash + std::fmt::Debug,
 ) -> Rect {
     let shown = ellipsize_middle(p, &tahoma(), s, (right - x).max(0.0));
     let rect = text(p, x, baseline, &shown, color);
     if shown != s {
-        full_on_hover(ui, rect, salt, s);
+        full_on_hover(ui, rect, id, s);
     }
     rect
 }
@@ -2024,11 +2225,11 @@ pub fn fit_middle(
 pub fn copyable(
     ui: &Ui,
     rect: Rect,
-    salt: impl std::hash::Hash + std::fmt::Debug,
+    id: impl std::hash::Hash + std::fmt::Debug,
     text: &str,
     cut: bool,
 ) -> Response {
-    let resp = ui.interact(rect, ui.scope_id().with(("copyable", salt)), pointer_only());
+    let resp = ui.interact(rect, ui.scope_id().with(("copyable", id)), pointer_only());
     copy_menu(&resp, text);
     if cut { resp.on_hover_text(text) } else { resp }
 }
@@ -2445,9 +2646,9 @@ pub fn edit_frame(p: &Painter, rc: Rect, enabled: bool) {
 
 /// A single-line edit: frame + egui text editing positioned so text starts at x+5 with its
 /// baseline at top+13.
-pub fn edit(ui: &mut Ui, rc: Rect, value: &mut String, enabled: bool, password: bool) -> Response {
+pub fn edit(ui: &mut Ui, rc: Rect, value: &mut String, enabled: bool, masked: bool) -> Response {
     edit_frame(ui.painter(), rc, enabled);
-    let resp = edit_text(ui, rc, value, enabled, password, 5.0);
+    let resp = edit_text(ui, rc, value, enabled, masked, 5.0);
     edit_focus_line(ui, &resp, rc);
     resp
 }
@@ -2504,7 +2705,7 @@ fn edit_text(
     rc: Rect,
     value: &mut String,
     enabled: bool,
-    password: bool,
+    masked: bool,
     inset: f32,
 ) -> Response {
     let color = if enabled {
@@ -2512,16 +2713,7 @@ fn edit_text(
     } else {
         EDIT_TEXT_DISABLED()
     };
-    edit_text_with(
-        ui,
-        rc,
-        value,
-        enabled,
-        password,
-        inset,
-        color,
-        start_align(),
-    )
+    edit_text_with(ui, rc, value, enabled, masked, inset, color, start_align())
 }
 
 /// Text aligned to its start: left, right in RTL.
@@ -2548,7 +2740,7 @@ fn edit_text_with(
     rc: Rect,
     value: &mut String,
     enabled: bool,
-    password: bool,
+    masked: bool,
     inset: f32,
     color: Color32,
     align: egui::Align,
@@ -2604,7 +2796,7 @@ fn edit_text_with(
     // out left of 0, so it never scrolled: its end stayed out of sight, and End, the arrows, a
     // click or typing there went on out of view. A line that fits keeps its alignment: there is
     // nothing to scroll.
-    let align = if align != egui::Align::LEFT && overflows(ui, value, password, inner.width()) {
+    let align = if align != egui::Align::LEFT && overflows(ui, value, masked, inner.width()) {
         egui::Align::LEFT
     } else {
         align
@@ -2616,7 +2808,7 @@ fn edit_text_with(
         .margin(egui::Margin::ZERO)
         .font(tahoma())
         .text_color(color)
-        .password(password)
+        .password(masked)
         // Enter keeps the focus in the box (the dialog's default button answers it; a box that
         // lost the keys on Enter took the next typing nowhere).
         .return_key(None)
@@ -2637,7 +2829,7 @@ fn edit_text_with(
                         modifiers,
                         physical_key,
                         repeat,
-                    } if password
+                    } if masked
                         && modifiers.command
                         && matches!(
                             key,
@@ -2697,14 +2889,14 @@ fn edit_text_with(
         ui.data_mut(|d| d.insert_temp(was_empty, true));
     }
     if enabled {
-        edit_menu(&resp, value, password, false);
+        edit_menu(&resp, value, masked, false);
     }
     resp
 }
 
-/// Is a one-line box's text (`password`: its dots, as egui shows them) wider than `width`?
-fn overflows(ui: &Ui, value: &str, password: bool, width: f32) -> bool {
-    let shown = if password {
+/// Is a one-line box's text (`masked`: its dots, as egui shows them) wider than `width`?
+fn overflows(ui: &Ui, value: &str, masked: bool, width: f32) -> bool {
+    let shown = if masked {
         "\u{2022}".repeat(value.graphemes(true).count())
     } else {
         value.to_owned()
@@ -2909,7 +3101,7 @@ fn readonly_with_icon(
     if cut { resp.on_hover_text(value) } else { resp }
 }
 
-pub fn edit_menu(resp: &Response, value: &mut String, password: bool, multiline: bool) {
+pub fn edit_menu(resp: &Response, value: &mut String, masked: bool, multiline: bool) {
     use crate::chrome::PopupResult;
     use egui::text::{CCursor, CCursorRange};
     use egui::text_edit::TextEditState;
@@ -2956,7 +3148,7 @@ pub fn edit_menu(resp: &Response, value: &mut String, password: bool, multiline:
     let now = (state.cursor.char_range().unwrap_or_default(), value.clone());
     let entries = edit_entries(
         undoer.has_undo(&now),
-        has && !password,
+        has && !masked,
         clip.is_some(),
         has,
         n > 0,
@@ -4135,7 +4327,7 @@ fn edit_light_with(
     value: &mut String,
     enabled: bool,
     align_right: bool,
-    password: bool,
+    masked: bool,
     parent: Color32,
 ) -> Response {
     // `parent`: the surface a box sits on (kept for its callers; the frame paints the inside).
@@ -4152,7 +4344,7 @@ fn edit_light_with(
     } else {
         start_align()
     };
-    let resp = edit_text_with(ui, rc, value, enabled, password, 5.0, color, align);
+    let resp = edit_text_with(ui, rc, value, enabled, masked, 5.0, color, align);
     edit_focus_line(ui, &resp, rc);
     resp
 }
@@ -4884,7 +5076,7 @@ crate::theme::themed! {
 /// check boxes and of the check lists (Options → Browsers, Sounds).
 /// A check box in a list's row ([`row_list`]): its 13 × 13 box at English `at`, ticked by a
 /// click (hot and pressed as any check box), not a Tab stop of its own (the list is: Space
-/// ticks the selected row). `salt` names the item, so the box stays its own while the list
+/// ticks the selected row). `id` names the item, so the box stays its own while the list
 /// scrolls. True when clicked.
 pub fn row_check(
     ui: &Ui,
@@ -4892,12 +5084,12 @@ pub fn row_check(
     at: Pos2,
     on: &mut bool,
     label: &str,
-    salt: impl std::hash::Hash + std::fmt::Debug,
+    id: impl std::hash::Hash + std::fmt::Debug,
 ) -> bool {
     let rc = rect(Rect::from_min_size(at, vec2(13.0, 13.0)));
     let resp = ui.interact(
         rc.expand(2.0),
-        widget_id(ui, ("row-check", salt)),
+        widget_id(ui, ("row-check", id)),
         pointer_only(),
     );
     if resp.clicked() {
@@ -5295,13 +5487,23 @@ pub fn radio_light_until(
     pass_focus_on(ui, &resp, enabled);
     let resp = enter_is_not_a_click(ui, resp);
     focus_on_press(&resp);
+    if resp.clicked() && !resp.has_focus() {
+        resp.request_focus();
+    }
+    // The caller updates its choice after `radio_light_until` returns, once earlier controls and
+    // the group's other buttons have already been drawn and exposed with the old one (#1692):
+    // discard this pass so the same frame lays out, paints and publishes the tree with the new
+    // choice at once (as UI Automation's SelectionItem.Select and AT-SPI's click expect).
+    if !selected && resp.clicked() && ui.ctx().current_pass_index() == 0 {
+        ui.ctx().request_discard("radio button chosen");
+    }
     show_focus(ui, &resp, hit.expand(1.0));
     expose(
         &resp,
         egui::Role::RadioButton,
         caption,
         enabled,
-        Some(selected),
+        Some(selected || resp.clicked()),
     );
     let c = glyph + vec2(6.5, 6.5);
     let state = State::of(&resp, enabled);
@@ -5392,16 +5594,44 @@ pub fn auto_repeat(ui: &Ui, resp: &Response) -> bool {
     fire
 }
 
+/// A browser's logo before its name (the extension's window, the first start's setup, Options'
+/// browser list), in English rect `rc` (mirrored in a right-to-left interface): the browser
+/// `name` (as MDM lists it) and, when known, its `program` tell which (browsericons.rs). One MDM
+/// has none for gets a neutral globe in `ink`, never another browser's logo.
+pub fn browser_icon(
+    ui: &Ui,
+    p: &Painter,
+    name: &str,
+    program: Option<&std::path::Path>,
+    rc: Rect,
+    ink: Color32,
+) {
+    let browser = crate::browsericons::Browser::of(name, program);
+    crate::browsericons::paint(ui, p, browser, rect(rc), ink);
+}
+
 /// What a control is for screen readers (Narrator, NVDA through AccessKit): its role, its name
 /// (the full translated label, "&" taken out), whether it can be used, and for a check box,
 /// radio button, tab or list row whether it is on. Our controls are painted by hand, so egui
 /// can't tell otherwise. Call right after the control's `interact`, before any tooltip.
 /// A line of text a window paints (a status, an error) made readable too: a screen reader and UI
-/// Automation find it as static text at `rc`, by `salt`, with `text` as it reads (no mnemonic).
-pub fn readable(ui: &Ui, rc: Rect, salt: impl std::hash::Hash + std::fmt::Debug, text: &str) {
-    let resp = ui.interact(rc, widget_id(ui, ("readable", salt)), Sense::hover());
+/// Automation find it as static text at `rc`, by `id`, with `text` as it reads (no mnemonic).
+pub fn readable(ui: &Ui, rc: Rect, id: impl std::hash::Hash + std::fmt::Debug, text: &str) {
+    let resp = ui.interact(rc, widget_id(ui, ("readable", id)), Sense::hover());
     let text = text.to_owned();
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, &text));
+}
+
+/// A [`readable`] Label that is also a polite live region: a screen reader speaks its text as
+/// it changes, without waiting for the focus to reach it. For rare news such as a failure —
+/// never for progress or percentages, which would interrupt endlessly (#1407).
+pub fn readable_live(ui: &Ui, rc: Rect, id: impl std::hash::Hash + std::fmt::Debug, text: &str) {
+    let resp = ui.interact(rc, widget_id(ui, ("readable", id)), Sense::hover());
+    let text = text.to_owned();
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, &text));
+    resp.ctx.accesskit_node_builder(resp.id, |n| {
+        n.set_live(egui::accesskit::Live::Polite);
+    });
 }
 
 /// The window's own node in the accessibility tree carries the window's title: egui leaves the
@@ -5430,14 +5660,51 @@ pub fn readable_paragraph(
     color: Color32,
     right: f32,
     line_h: f32,
-    salt: impl std::hash::Hash + std::fmt::Debug,
+    id: impl std::hash::Hash + std::fmt::Debug,
+) -> usize {
+    readable_paragraph_impl(ui, p, x, baseline, s, color, right, line_h, id, false)
+}
+
+/// A [`readable_paragraph`] that is a polite live region, like [`readable_live`]: its text is
+/// spoken as it changes, without the focus. For rare news such as a failure only (#1407).
+#[allow(clippy::too_many_arguments)]
+pub fn readable_paragraph_live(
+    ui: &Ui,
+    p: &Painter,
+    x: f32,
+    baseline: f32,
+    s: &str,
+    color: Color32,
+    right: f32,
+    line_h: f32,
+    id: impl std::hash::Hash + std::fmt::Debug,
+) -> usize {
+    readable_paragraph_impl(ui, p, x, baseline, s, color, right, line_h, id, true)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn readable_paragraph_impl(
+    ui: &Ui,
+    p: &Painter,
+    x: f32,
+    baseline: f32,
+    s: &str,
+    color: Color32,
+    right: f32,
+    line_h: f32,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    live: bool,
 ) -> usize {
     let lines = paragraph(p, x, baseline, s, color, right, line_h);
     let rc = rect(Rect::from_min_max(
         pos2(x, baseline - 12.0),
         pos2(right, baseline + line_h * (lines as f32 - 1.0) + 4.0),
     ));
-    readable(ui, rc, salt, s);
+    if live {
+        readable_live(ui, rc, id, s);
+    } else {
+        readable(ui, rc, id, s);
+    }
     lines
 }
 
@@ -6027,6 +6294,9 @@ pub fn radio_keys(ui: &Ui, group: &[Response]) -> Option<usize> {
         .map(|k| (at as isize + step * k).rem_euclid(n) as usize)
         .find(|&j| group[j].sense.senses_click())?;
     group[next].request_focus();
+    if ui.ctx().current_pass_index() == 0 {
+        ui.ctx().request_discard("radio group arrow");
+    }
     Some(next)
 }
 
@@ -6216,6 +6486,18 @@ pub fn tabs_light(
             .collect()
     };
     let mut clicked = None;
+    // The strip as a tab list in the accessibility tree, the tabs its children: UI Automation
+    // and AT-SPI read a tab's "of n" from its container, never from the tab itself — so the
+    // count is the strip's, as the download list carries its rows' (list.rs, #1407).
+    let mut strip_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(Rect::from_min_max(rc.min, pos2(rc.right(), t)))
+            .accessibility_role(egui::accesskit::Role::TabList),
+    );
+    ui.ctx().accesskit_node_builder(strip_ui.unique_id(), |n| {
+        n.set_size_of_set(tabs.len());
+    });
+    let ui = &mut strip_ui;
     let mut draw = |i: usize, tab: &LightTab, sel: bool| {
         let (sel_x, unsel_x, label_x, shown) = &placed[i];
         let (x0, x1) = if sel { *sel_x } else { *unsel_x };
@@ -6239,6 +6521,8 @@ pub fn tabs_light(
             true,
             Some(sel),
         );
+        // "tab i of n", as a Windows tab control says it (#1407).
+        position_in_set(&resp, i, tabs.len());
         let resp = enter_is_not_a_click(ui, resp);
         if resp.clicked() && !sel {
             clicked = Some(i);
@@ -6303,6 +6587,71 @@ pub fn tabs_light(
         draw(selected, tab, true);
     }
     clicked
+}
+
+#[cfg(test)]
+mod tab_list_tests {
+    use super::*;
+    use egui::accesskit::{Role, TreeUpdate};
+
+    fn pass(count: usize, selected: usize) -> TreeUpdate {
+        let ctx = egui::Context::default();
+        let mut defs = egui::FontDefinitions::default();
+        install_fonts(&mut defs, None);
+        ctx.set_fonts(defs);
+        ctx.enable_accesskit();
+        let labels = ["One", "Two", "Three", "Four"];
+        let tabs: Vec<LightTab> = (0..count)
+            .map(|i| LightTab {
+                label: labels[i],
+                sel: (i as f32 * 60.0, i as f32 * 60.0 + 62.0),
+                unsel: (i as f32 * 60.0 + 2.0, i as f32 * 60.0 + 60.0),
+            })
+            .collect();
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(500.0, 400.0))),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| {
+            let rc = Rect::from_min_size(pos2(10.0, 10.0), egui::vec2(400.0, 300.0));
+            tabs_light(ui, pos2(10.0, 10.0), rc, &tabs, selected);
+        });
+        out.textures_delta.clear();
+        out.platform_output
+            .accesskit_update
+            .expect("AccessKit is on")
+    }
+
+    #[test]
+    fn the_strip_is_a_tab_list_holding_its_tabs() {
+        // UI Automation and AT-SPI read a tab's "of n" from its container (#1407): the strip
+        // says the count, the tabs are its children, each with its place.
+        let u = pass(3, 1);
+        let strip = u
+            .nodes
+            .iter()
+            .find(|(_, n)| n.role() == Role::TabList)
+            .map(|(_, n)| n)
+            .expect("the strip is a tab list");
+        assert_eq!(strip.size_of_set(), Some(3));
+        let mut tabs: Vec<&egui::accesskit::Node> = u
+            .nodes
+            .iter()
+            .filter(|(_, n)| n.role() == Role::Tab)
+            .map(|(_, n)| n)
+            .collect();
+        assert_eq!(tabs.len(), 3);
+        tabs.sort_by_key(|n| n.position_in_set());
+        for (i, tab) in tabs.iter().enumerate() {
+            assert_eq!(tab.position_in_set(), Some(i));
+        }
+        for (id, _) in u.nodes.iter().filter(|(_, n)| n.role() == Role::Tab) {
+            assert!(
+                strip.children().contains(id),
+                "every tab is the tab list's child"
+            );
+        }
+    }
 }
 
 /// The 8 × 5 "v" of drop-downs, its top-left at `at`.
@@ -7770,6 +8119,26 @@ mod tests {
             }
         });
         out.textures_delta.clear();
+    }
+
+    #[test]
+    fn a_note_stops_at_the_bottom_of_its_page() {
+        with_painter(|p| {
+            // Room for three lines of 13 px from 438: 438, 451, 464; 474 is the page's edge, so
+            // the fourth (477) is left out.
+            assert_eq!(lines_that_fit(438.0, 474.0, 13.0), 3);
+            assert_eq!(lines_that_fit(438.0, 481.0, 13.0), 4);
+            // A page with no room at all keeps one line, and no zero-line paragraph.
+            assert_eq!(lines_that_fit(438.0, 430.0, 13.0), 1);
+            let lines: Vec<String> = ["one", "two", "three", "four"].map(String::from).to_vec();
+            let shown = lines_until(p, &lines, 3, 300.0);
+            assert_eq!(shown.len(), 3);
+            // The left-out lines are said by the last one's "...", inside its room.
+            assert!(shown[2].ends_with("..."), "{shown:?}");
+            assert!(text_width(p, &shown[2]) <= 300.0);
+            // Every line fits: drawn as they are.
+            assert_eq!(lines_until(p, &lines, 4, 300.0), lines);
+        });
     }
 
     #[test]
@@ -9531,5 +9900,96 @@ example.org"; // values typed in, not texts to translate
             );
         });
         out.textures_delta.clear();
+    }
+
+    /// #1692: each round radio button is a RadioButton with Click, Focus and its checked state
+    /// (Toggled, which AccessKit maps to UI Automation's SelectionItem and AT-SPI's Checked), and
+    /// pressing an unselected one through AccessKit (or moving with the arrows) updates both
+    /// buttons' states in that same frame's tree, without waiting for a later repaint.
+    #[test]
+    fn a_radio_group_answers_assistive_select_in_the_same_frame() {
+        use egui::accesskit::{Action, Role, Toggled};
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        // Labels from variables: the catalog's extractor takes literal ones as texts to translate.
+        let (first, second) = ("Quick cut", "Exact cut");
+        let run = |choice: &mut usize, events: Vec<egui::Event>| {
+            let mut ids = [egui::Id::NULL; 2];
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    events,
+                    focused: true,
+                    ..Default::default()
+                },
+                |ui| {
+                    let a = radio_light(ui, pos2(20.0, 20.0), *choice == 0, first, true);
+                    if a.clicked() {
+                        *choice = 0;
+                    }
+                    let b = radio_light(ui, pos2(140.0, 20.0), *choice == 1, second, true);
+                    if b.clicked() {
+                        *choice = 1;
+                    }
+                    if let Some(i) = radio_keys(ui, &[a.clone(), b.clone()]) {
+                        *choice = i;
+                    }
+                    ids = [a.id, b.id];
+                },
+            );
+            out.textures_delta.clear();
+            let tree = out
+                .platform_output
+                .accesskit_update
+                .expect("AccessKit tree");
+            let state_of = |id: egui::Id| {
+                let (_, n) = tree
+                    .nodes
+                    .iter()
+                    .find(|(nid, _)| *nid == id.accesskit_id())
+                    .expect("radio node");
+                assert_eq!(n.role(), Role::RadioButton);
+                assert!(n.supports_action(Action::Click));
+                assert!(n.supports_action(Action::Focus));
+                (n.label().unwrap_or("").to_owned(), n.toggled())
+            };
+            (
+                ids,
+                state_of(ids[0]),
+                state_of(ids[1]),
+                tree.focus,
+                out.platform_output.events,
+            )
+        };
+
+        let mut choice = 0;
+        let (ids, a, b, _, _) = run(&mut choice, vec![]);
+        assert_eq!(a, (first.to_owned(), Some(Toggled::True)));
+        assert_eq!(b, (second.to_owned(), Some(Toggled::False)));
+
+        // UI Automation's SelectionItem.Select() (and AT-SPI's "click") sends Action::Click: in
+        // this single frame, the chosen radio turns True, the previous one False, and focus moves.
+        let (ids, a, b, focus, events) =
+            run(&mut choice, vec![ask(ids[1].accesskit_id(), Action::Click)]);
+        assert_eq!(choice, 1);
+        assert_eq!(a, (first.to_owned(), Some(Toggled::False)));
+        assert_eq!(b, (second.to_owned(), Some(Toggled::True)));
+        assert_eq!(focus, ids[1].accesskit_id());
+        assert!(events.iter().any(|e| {
+            matches!(e, egui::output::OutputEvent::Clicked(info) if info.selected == Some(true))
+        }));
+
+        // An arrow key in the group switches back in the same frame too.
+        let left = egui::Event::Key {
+            key: egui::Key::ArrowLeft,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let (ids, a, b, focus, _) = run(&mut choice, vec![left]);
+        assert_eq!(choice, 0);
+        assert_eq!(a, (first.to_owned(), Some(Toggled::True)));
+        assert_eq!(b, (second.to_owned(), Some(Toggled::False)));
+        assert_eq!(focus, ids[0].accesskit_id());
     }
 }

@@ -15,7 +15,7 @@ No. MDM is an independent program written from scratch in Rust, with no connecti
 
 ### How is MDM different from IDM? {#mdm-vs-idm}
 
-The layout is familiar on purpose: the toolbar, the categories, the download list, the progress window with every connection, queues and the scheduler. The differences: MDM is free and open source, downloads BitTorrent and magnet links in the same list, finished faster in [our benchmark](/benchmark.html), speaks 86 languages and has builds for Linux and macOS. IDM is the more mature product, refined over many years. See the full [comparison](/idm-alternative.html).
+The layout is familiar on purpose: the toolbar, the categories, the download list, the progress window with every connection, queues and the scheduler. The differences: MDM is free and open source, downloads BitTorrent and magnet links in the same list, finished faster in [our benchmark](/benchmark.html), speaks 87 languages and has builds for Linux and macOS. IDM is the more mature product, refined over many years. See the full [comparison](/idm-alternative.html).
 
 ### Why does MDM show a larger memory figure than IDM? {#memory-vs-idm}
 
@@ -43,7 +43,7 @@ MDM is made by Ahmed Nefzaoui, an independent developer, and is open to contribu
 
 ### Which systems does it run on? {#systems}
 
-Windows 10 and 11 is the main platform, on 64-bit PCs (x64); from the version after 0.5.2, on Windows on ARM PCs and 32-bit Windows 10 too, each with files of its own. Linux is supported too, with an AppImage, a .deb, an .rpm and a .tar.gz in every release: since version 0.5.0 it isn't experimental any more, and it is checked on GNOME, KDE Plasma, Xfce and Cinnamon, in Wayland sessions too, and its packages in clean Ubuntu, Debian and Fedora systems. Still to come there: the Flatpak Firefox isn't checked yet, and screen readers (Orca) don't read MDM's windows yet. macOS builds (.dmg) come with every release too, and stay experimental. See [Windows, Mac and Linux](/features/systems.html) and [Download](/download.html).
+Windows 10 and 11 is the main platform, on 64-bit PCs (x64); from version 0.6.0, on Windows on ARM PCs and 32-bit Windows 10 too, each with files of its own. Linux is supported too, with an AppImage, a .deb, an .rpm and a .tar.gz in every release: since version 0.5.0 it isn't experimental any more, and it is checked on GNOME, KDE Plasma, Xfce and Cinnamon, in Wayland sessions too, and its packages in clean Ubuntu, Debian and Fedora systems. Still to come there: the Flatpak Firefox isn't checked yet, and screen readers (Orca) don't read MDM's windows yet. macOS builds (.dmg) come with every release too, and stay experimental. See [Windows, Mac and Linux](/features/systems.html) and [Download](/download.html).
 
 ### Does it run on Windows 7 or 8? {#windows-7}
 
@@ -135,7 +135,7 @@ No, unless you want it to. While a torrent downloads it trades pieces with other
 
 ### Is MDM available in my language? {#languages}
 
-Very likely: MDM speaks 86 languages, every display language Windows 11 offers, chosen on the first start or any time in **View → Language**. Arabic, Hebrew, Persian, Urdu and Uyghur are laid out right to left. See [all the languages](/languages.html) and how to help improve yours.
+Very likely: MDM speaks 87 languages, every display language Windows 11 offers, chosen on the first start or any time in **View → Language**. Arabic, Hebrew, Persian, Urdu and Uyghur are laid out right to left. See [all the languages](/languages.html) and how to help improve yours.
 
 ### Can other programs or scripts control MDM? {#automation}
 
