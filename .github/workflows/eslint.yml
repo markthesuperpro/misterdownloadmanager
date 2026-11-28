@@ -2,6 +2,7 @@
 # They are provided by a third-party and are governed by
 # separate terms of service, privacy policy, and support
 # documentation.
+#
 # ESLint is a tool for identifying and reporting on patterns
 # found in ECMAScript/JavaScript code.
 # More details at https://github.com/eslint/eslint
@@ -18,35 +19,47 @@ on:
   schedule:
     - cron: '42 2 * * 4'
 
+permissions:
+  contents: read
+  security-events: write
+
 jobs:
   eslint:
-    name: Run eslint scanning
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      security-events: write
-      actions: read # only required for a private repository by github/codeql-action/upload-sarif to get the Action run status
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
 
       - name: Install ESLint
         run: |
-          npm install eslint@8.10.0
-          npm install @microsoft/eslint-formatter-sarif@3.1.0
+          npm init -y
+          npm install --save-dev eslint@8.57.1 @microsoft/eslint-formatter-sarif@3.1.0
 
       - name: Run ESLint
         env:
           SARIF_ESLINT_IGNORE_SUPPRESSED: "true"
-        run: npx eslint .
-          --config .eslintrc.js
-          --ext .js,.jsx,.ts,.tsx
-          --format @microsoft/eslint-formatter-sarif
-          --output-file eslint-results.sarif
+        run: |
+          npx eslint extension \
+            --config .eslintrc.js \
+            --ext .js \
+            --format @microsoft/eslint-formatter-sarif \
+            --output-file eslint-results.sarif
         continue-on-error: true
 
-      - name: Upload analysis results to GitHub
-        uses: github/codeql-action/upload-sarif@v3
+      - name: Upload ESLint results
+        if: ${{ always() && hashFiles('eslint-results.sarif') != '' }}
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
           sarif_file: eslint-results.sarif
-          wait-for-processing: true
+          category: eslint
+
+      - name: Verify ESLint generated SARIF
+        if: ${{ always() && hashFiles('eslint-results.sarif') == '' }}
+        run: |
+          echo "::error::ESLint did not generate eslint-results.sarif"
+          exit 1
