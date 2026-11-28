@@ -67,6 +67,10 @@ SPONSORS = "https://github.com/sponsors/anefzaoui"
 RATINGS_API_LIVE = "https://ratings.misterdownloadmanager.com/api/ratings"
 TURNSTILE_SITEKEY_LIVE = "0x4AAAAAAGPdSmAxeZS1XKuZ"
 RATINGS_API = os.environ.get("MDM_RATINGS_API", RATINGS_API_LIVE)
+# The same Worker's live figures for the home page's tallies (website/ratings/src/stats.js: the
+# downloads from GitHub, the add-on's users); MDM_STATS_API stands in for it (a local Worker), "" for none.
+STATS_API_LIVE = "https://ratings.misterdownloadmanager.com/api/stats"
+STATS_API = os.environ.get("MDM_STATS_API", STATS_API_LIVE)
 TURNSTILE_SITEKEY = os.environ.get("MDM_TURNSTILE_SITEKEY", TURNSTILE_SITEKEY_LIVE)
 NAME = "Mister Download Manager"
 # The next release, as the site announces it. What is in the source but not in a download yet
@@ -277,9 +281,10 @@ PILE_TIERS = [(0, 7), (561, 11), (1200, 15)]
 def crew_pile() -> str:
     """The home page's thanks, on the board beside the hero's label (under the window; after the
     label on a phone): "Made possible by these amazing humans", a row of round photos, overlapping,
-    and "+N" for the ones the row has no room for."""
+    and "+N" for the ones the row has no room for; then the tallies (what they made)."""
     if not CREW:
-        return ""
+        board = tallies_board()
+        return f'<div class="parcel-crew">\n          {board}\n        </div>' if board else ""
     n = len(CREW)
     shown = max(cap for _, cap in PILE_TIERS)
     # "+N" for each width where the row is full: its count there, and only there.
@@ -291,11 +296,63 @@ def crew_pile() -> str:
           <p class="crew-title" id="crew-title">Made possible by these amazing humans</p>
           <ul class="faces pile {full}" style="--face: 44px" role="list" aria-labelledby="crew-title">{"".join(face(p, 44) for p in CREW[:shown])}{more_li}</ul>
           <p class="crew-fine">{people_count(n)} who sent a pull request, reported a problem or joined a conversation on GitHub. <a href="/contributors.html">Meet them all</a></p>
+          {tallies_board()}
         </div>"""
 
 
 def esc(s: str) -> str:
     return html.escape(s, quote=True)
+
+
+# The tallies under the crew: split-flap counters of the downloads from GitHub and the browser add-on's
+# users (styles.css .tallies, main.js). The build bakes in the latest figures it could read
+# (tallies.py: DOWNLOADS, STORES), so without scripts, or with the Worker down, they show those;
+# main.js flips them up from zero once in view, to the Worker's live figures (STATS_API) when it
+# answers in time, else to these. Each figure: the source(s) it adds up (the Worker's names).
+TALLIES = [
+    ("downloads", ("downloads",), "Downloads"),
+    ("addon", ("chrome", "firefox"), "Browser add-on users"),
+]
+
+
+def baked_figures() -> dict:
+    """{source: {value, fetched}} as the Worker answers, from the figures this build read."""
+    out = {}
+    if DOWNLOADS.get("total"):
+        out["downloads"] = {"value": DOWNLOADS["total"], "fetched": DOWNLOADS.get("checked", "")}
+    for key in ("chrome", "firefox"):
+        s = STORES.get(key) or {}
+        if s.get("users"):
+            out[key] = {"value": s["users"], "fetched": s.get("checked", "")}
+    return out
+
+
+def flap_tiles(n: int) -> str:
+    """The figure as the board shows it at rest, English digits (main.js writes it the page
+    language's way): a paper tile per digit, the separators between them on the board."""
+    return "".join(f'<span class="flap"><span class="flap-face">{c}</span></span>' if c.isdigit()
+                   else f'<span class="flap-sep">{c}</span>' for c in f"{n:,}")
+
+
+def tallies_board() -> str:
+    baked = baked_figures()
+    rows = []
+    for key, sources, name in TALLIES:
+        if not all(src in baked for src in sources):
+            continue
+        n = sum(baked[src]["value"] for src in sources)
+        rows.append(f'<div class="tally" data-sum="{" ".join(sources)}"><dt>{name}</dt>'
+                    f'<dd><span class="sr-only" translate="no" data-tally-text>{n:,}</span>'
+                    f'<span class="flaps" aria-hidden="true" translate="no" dir="ltr">{flap_tiles(n)}</span></dd></div>')
+    if not rows:
+        return ""
+    days = sorted(v["fetched"][:10] for v in baked.values() if v.get("fetched"))
+    day = days[0] if days else TODAY
+    data = esc(json.dumps(baked, separators=(",", ":")))
+    return (f'<div class="tallies-board" data-tallies data-api="{esc(STATS_API)}" data-baked="{data}">'
+            f'<dl class="tallies">{"".join(rows)}</dl>'
+            f'<p class="tallies-fine">From GitHub, the Chrome Web Store and Firefox Add-ons. '
+            f'As of <time datetime="{day}" translate="no" dir="ltr" data-tally-day>{day}</time></p></div>')
 
 
 def github_slug(text: str, separator: str = "-") -> str:
@@ -454,6 +511,8 @@ def cws_button(extra_class: str = "") -> str:
 STORES: dict[str, dict] = {}
 # The site's own ratings (tallies.ratings()): {average, count, distribution, checked}.
 RATINGS: dict = {}
+# GitHub's downloads (tallies.downloads(), read at every build): {total, checked}.
+DOWNLOADS: dict = {}
 
 
 def num(value: float, dec: int = 0, plus: bool = False) -> str:
@@ -1265,19 +1324,19 @@ def build_contributors() -> None:
 TRENDSHIFT = "https://trendshift.io/repositories/337427"
 SOURCEFORGE = "https://sourceforge.net/projects/mister-download-manager.mirror/files/"
 RELEASE_KEY = f"{REPO}/blob/main/crates/tools/keys/mdm-release.asc"
-# The figures the home page and /press.html show. The stores' come from tallies.stores() (read at
-# every build: the Chrome Web Store listing; the add-ons API's average_daily_users and ratings),
-# rounded down. The others as each source showed them on FIGURES_CHECKED, rounded down: read them
-# again where they come from before changing them (and the date): GitHub's releases API, the
-# download_count of the app's own files in every release (installers, zips, .dmg, AppImage, .deb,
-# .rpm, .tar.gz: not the checksums, symbols or extensions); Trendshift's page (its placements).
+# The figures the home page and /press.html show, read at every build and rounded down: the
+# stores' from tallies.stores() (the Chrome Web Store listing; the add-ons API's
+# average_daily_users and ratings), GitHub's from tallies.downloads() (the releases API, the
+# download_count of every file of every release, as GitHub's own total and the README's badge). Trendshift's placements are with the
+# awards (AWARDS). FIGURES_CHECKED: the day /press.html's links were last checked by hand.
 FIGURES_CHECKED = "2026-11-18"
-FIGURES_FIXED = [
-    # (field name, where it comes from, value, its fine print)
-    ("GitHub Releases", f"{REPO}/releases", "280,000+ downloads", "of the app, every version together"),
-    ("Trendshift", TRENDSHIFT, "#1 in Rust",
-     'repository of the day on <time datetime="2026-11-09" translate="no">2026-11-09</time>'),
-]
+
+
+def downloads_figure() -> tuple[str, str, str, str] | None:
+    if not DOWNLOADS.get("total"):
+        return None
+    return ("GitHub Releases", f"{REPO}/releases", f'{num(floor_figure(DOWNLOADS["total"]), plus=True)} downloads',
+            "on GitHub, every version together")
 
 
 def store_figure(key: str) -> tuple[str, str, str, str] | None:
@@ -1292,7 +1351,7 @@ def store_figure(key: str) -> tuple[str, str, str, str] | None:
 
 
 def figures() -> list[tuple[str, str, str, str]]:
-    return [f for f in (store_figure("chrome"), store_figure("firefox")) if f] + FIGURES_FIXED
+    return [f for f in (store_figure("chrome"), store_figure("firefox"), downloads_figure()) if f]
 # Where MDM comes from, for /press.html's "Available on": (name, link, what it is). The official
 # places first; the community's packages are made by volunteers, each checked to install the
 # release's own files (their checksums match SHA256SUMS.txt) when it was added.
@@ -1326,37 +1385,61 @@ def content_tsv(name: str) -> list[list[str]]:
 def figures_fields() -> str:
     """The stores' figures in the label's field grammar, each a link to where it was read. The
     sources' names are names (translate="no": a lone element in its block would still be sent)."""
-    return '<dl class="fields figures">' + "".join(
+    shown = figures()
+    # --n: how many there are (a store's can be missing), so the desktop row is always full.
+    return f'<dl class="fields figures" style="--n: {len(shown)}">' + "".join(
         f'<div><dt translate="no">{name}</dt><dd><a href="{esc(href)}">{value}</a><small>{fine}</small></dd></div>'
-        for name, href, value, fine in figures()) + "</dl>"
+        for name, href, value, fine in shown) + "</dl>"
 
 
-# Awards given to MDM, shown under the figures (home and /press.html): (who gave it, the award's
-# name, where it is shown, its light image, its dark image, its fine print, the day it was seen).
-# Only awards actually given: SourceForge's badge page shows its other badges greyed out until a
-# project earns them. The images are the givers' own, copied unchanged into website/assets/badges/
-# (SOURCES.txt says from where) and served from this site: showing them asks no other site for
-# anything (the privacy page lists the only outside requests).
+# Awards given to MDM, shown under the figures (home and /press.html). Only awards actually given:
+# SourceForge's badge page shows its other badges greyed out until a project earns them; Trendshift's
+# repository page lists the placements MDM reached ("achievements"), each the best it has had, and
+# when it first did (read them again there before changing them). Each award:
+#   giver, name: who gave it (a name, translate="no") and the award's name; `proper` when that name
+#     is a name too (SourceForge's "Users Love Us"), so it isn't translated;
+#   href: where it is shown; fine: its fine print (HTML), with the day it was seen or reached;
+#   seal: the giver's own badge, light and dark, copied unchanged into website/assets/badges/
+#     (SOURCES.txt says from where) and served from this site, so showing it asks no other site for
+#     anything (the privacy page lists the only outside requests);
+#   stamp: or, for a giver whose badge is a banner rather than a seal (Trendshift's), the rank as
+#     the site's own ink stamp (the rank, the list it was on), never the giver's artwork.
 SOURCEFORGE_PROJECT = "https://sourceforge.net/projects/mister-download-manager.mirror/"
 AWARDS = [
-    ("SourceForge", "Users Love Us", SOURCEFORGE_PROJECT,
-     "/assets/badges/sourceforge-users-love-us.svg", "/assets/badges/sourceforge-users-love-us-dark.svg",
-     "Given by SourceForge, which keeps a copy of every release", "2026-11-24"),
+    {"giver": "SourceForge", "name": "Users Love Us", "proper": True, "href": SOURCEFORGE_PROJECT,
+     "seal": ("/assets/badges/sourceforge-users-love-us.svg", "/assets/badges/sourceforge-users-love-us-dark.svg"),
+     "fine": 'Given by SourceForge, which keeps a copy of every release. '
+             'Seen on <time datetime="2026-11-24" translate="no">2026-11-24</time>'},
+    # trendshift.io/api/badge/trendshift/repositories/337427/{daily,weekly}[?language=Rust], checked
+    # on 2026-11-27: #1 Rust repository of the day (first on 2026-11-09) and of the week (week 46 of
+    # 2026); every language: #4 of the day (2026-11-09), #3 of the week (week 46). No monthly one.
+    {"giver": "Trendshift", "name": "#1 Rust repository of the day and of the week", "href": TRENDSHIFT,
+     "stamp": ("#1", "Rust"),
+     "fine": 'All languages together: #3 repository of the week, #4 of the day. Reached on '
+             '<time datetime="2026-11-09" translate="no">2026-11-09</time>, in week 46 of 2026'},
 ]
 
 
 def awards_row() -> str:
-    """AWARDS as a ruled row of seals: the badge (a day and a night version), who gave it as the
-    field name, the award's name as a link, its fine print. The seal repeats the name's link, so it
-    is hidden from screen readers and the keyboard. Names are names (translate="no")."""
-    items = "".join(
-        f'<li class="award"><a class="award-seal" href="{esc(href)}" tabindex="-1" aria-hidden="true">'
-        f'<img class="for-light-i" src="{light}" alt="" width="84" height="84" loading="lazy" decoding="async">'
-        f'<img class="for-dark-i" src="{dark}" alt="" width="84" height="84" loading="lazy" decoding="async"></a>'
-        f'<div class="award-text"><p class="field-name" translate="no">{giver}</p>'
-        f'<p class="award-name" translate="no"><a href="{esc(href)}">{name}</a></p>'
-        f'<p class="award-fine">{fine}. Seen on <time datetime="{day}" translate="no">{day}</time></p></div></li>'
-        for giver, name, href, light, dark, fine, day in AWARDS)
+    """AWARDS as a ruled row of seals: the badge (a day and a night version) or the rank's stamp,
+    who gave it as the field name, the award's name as a link, its fine print. The seal repeats the
+    name's link, so it is hidden from screen readers and the keyboard. Givers are names
+    (translate="no"), and so are the awards' names that are names."""
+    def seal(a: dict) -> str:
+        if "seal" in a:
+            light, dark = a["seal"]
+            return (f'<img class="for-light-i" src="{light}" alt="" width="84" height="84" loading="lazy" decoding="async">'
+                    f'<img class="for-dark-i" src="{dark}" alt="" width="84" height="84" loading="lazy" decoding="async">')
+        rank, field = a["stamp"]
+        return f'<span class="rank-stamp" translate="no"><b>{rank}</b><span>{field}</span></span>'
+
+    def item(a: dict) -> str:
+        keep = ' translate="no"' if a.get("proper") else ""
+        return (f'<li class="award"><a class="award-seal" href="{esc(a["href"])}" tabindex="-1" aria-hidden="true">{seal(a)}</a>'
+                f'<div class="award-text"><p class="field-name" translate="no">{a["giver"]}</p>'
+                f'<p class="award-name"{keep}><a href="{esc(a["href"])}">{a["name"]}</a></p>'
+                f'<p class="award-fine">{a["fine"]}</p></div></li>')
+    items = "".join(item(a) for a in AWARDS)
     return f'<ul class="awards" role="list">{items}</ul>' if items else ""
 
 
@@ -1365,12 +1448,13 @@ def checked_on(text: str = "Checked on") -> str:
 
 
 def figures_dates() -> str:
-    """When the figures were read: the stores' at the last build that could, the others by hand."""
-    day = stores_checked()
-    if not day:
+    """When the figures were read: the older of the stores' and GitHub's, each at the last build
+    that could read it."""
+    days = sorted(d for d in (stores_checked(), DOWNLOADS.get("checked", "")) if d)
+    if not days:
         return checked_on("Figures checked on")
-    return (f'Store figures as of <time datetime="{day}" translate="no">{day}</time>, '
-            f'the others checked on <time datetime="{FIGURES_CHECKED}" translate="no">{FIGURES_CHECKED}</time>')
+    return (f'Figures as of <time datetime="{days[0]}" '
+            f'translate="no">{days[0]}</time>')
 
 
 def said_list() -> str:
@@ -2231,6 +2315,7 @@ def main() -> None:
                  "`python tools/website/vitrine.py fetch`):\n  " + "\n  ".join(bad))
     STATS.update(repo_stats())
     STORES.update(tallies.stores())
+    DOWNLOADS.update(tallies.downloads())
     RATINGS.update(tallies.ratings(RATINGS_API, save=RATINGS_API == RATINGS_API_LIVE))
     load_crew()
     copy_static()

@@ -907,12 +907,39 @@ pub struct Net {
     /// The network adapter by name ("" any), looked for when the command starts.
     pub adapter: String,
     pub torrent_proxy: TorrentProxy,
+    /// Torrent settings' network switches (#40): the DHT turned off there is off here too.
+    pub torrent_net: TorrentNet,
     /// Torrent settings' public tracker list (#1776), when it is on: `torrent-get` adds it to a
     /// public torrent as the app does.
     pub public_trackers: Option<PublicTrackers>,
     /// Options → Connection's site rules and exceptions (#1778): `get` and `resume` ask a site
-    /// as the app does, where the command line doesn't say otherwise.
+    /// as the app does, where the command line doesn't say otherwise; a rule's proxy (#1960)
+    /// for downloads and the helpers' runs, unless the command gives its own `--proxy`.
     pub sites: SiteRules,
+}
+
+/// Torrent settings → Network (#40) for `torrent-info` and `torrent-get`'s session, as the app's
+/// takes them: the DHT, finding peers on the local network, UPnP, incoming connections and uTP.
+/// Without the app's settings, all on (the engine's defaults, as the app's own are).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TorrentNet {
+    pub dht: bool,
+    pub lsd: bool,
+    pub upnp: bool,
+    pub listen: bool,
+    pub utp: bool,
+}
+
+impl Default for TorrentNet {
+    fn default() -> Self {
+        TorrentNet {
+            dht: true,
+            lsd: true,
+            upnp: true,
+            listen: true,
+            utp: true,
+        }
+    }
 }
 
 /// The app's site rules and its per-server exceptions (#1778, `mdm_ipc::siterules`).
@@ -950,6 +977,7 @@ struct Conn {
     dns: mdm_engine::DnsChoice,
     route: mdm_engine::Route,
     torrent_proxy: TorrentProxy,
+    torrent_net: TorrentNet,
     public_trackers: Option<PublicTrackers>,
     sites: SiteRules,
 }
@@ -997,13 +1025,24 @@ impl Conn {
         } else {
             mdm_engine::net::route_for(adapter, &mdm_engine::net::adapters())
         };
+        // The command's own --proxy is for everything it does: the rules' proxies step aside
+        // (#1960), as a download's own proxy comes before them in the app.
+        let mut sites = net.sites.clone();
+        if proxy.is_some() {
+            for rule in &mut sites.rules {
+                rule.proxy = None;
+                rule.proxy_user.clear();
+                rule.proxy_pass.clear();
+            }
+        }
         Conn {
             proxy: proxy.clone().unwrap_or_else(|| net.proxy.clone()),
             dns: dns.cloned().unwrap_or_else(|| net.dns.clone()),
             route,
             torrent_proxy: net.torrent_proxy.clone(),
+            torrent_net: net.torrent_net.clone(),
             public_trackers: net.public_trackers.clone(),
-            sites: net.sites.clone(),
+            sites,
         }
     }
 
@@ -1011,6 +1050,7 @@ impl Conn {
     /// gallery-dl take the proxy, DNS and adapter from `mdm_tools::proc`.
     fn set(self) {
         mdm_tools::proc::set_proxy(self.proxy.clone());
+        mdm_tools::proc::set_site_rules(&self.sites.rules);
         mdm_tools::proc::set_dns(self.dns.clone());
         mdm_tools::proc::set_route(self.route.clone());
         *CONN.write().unwrap() = Some(self);
@@ -1048,7 +1088,8 @@ fn parse_proxy(s: &str) -> Result<Proxy, String> {
 fn proxy_arg(s: &str, password: Option<String>) -> Result<Proxy, String> {
     let s = s.trim();
     match s.to_ascii_lowercase().as_str() {
-        "none" | "direct" => return Ok(Proxy::None),
+        // Direct, yt-dlp and gallery-dl too (#1616): asked for, not left at a default.
+        "none" | "direct" => return Ok(Proxy::Direct),
         "system" => return Ok(Proxy::System),
         _ => {}
     }
@@ -1341,7 +1382,7 @@ async fn run(cmd: Cmd, json: bool, accounts: Option<&dyn Accounts>) -> anyhow::R
                 &folder,
                 &ask,
                 &Default::default(),
-                Some(video_engine(8)),
+                Some(video_engine(8, &url)),
                 None,
             )?;
             let p = loop {
@@ -1545,7 +1586,7 @@ async fn run(cmd: Cmd, json: bool, accounts: Option<&dyn Accounts>) -> anyhow::R
                     None,
                     &Default::default(),
                     &Default::default(),
-                    Some(video_engine(connections)),
+                    Some(video_engine(connections, &e.url)),
                 )?;
                 let state = loop {
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -1771,7 +1812,7 @@ async fn run(cmd: Cmd, json: bool, accounts: Option<&dyn Accounts>) -> anyhow::R
                 None,
                 &browser,
                 &subs,
-                Some(video_engine(connections)),
+                Some(video_engine(connections, &address)),
             )?;
             // The download's log as it comes (a quality not served falling back to the
             // nearest, #94; a server given up), as the window's log has it.
@@ -1979,12 +2020,21 @@ fn subs_arg(langs: &str, automatic: bool, embed: bool) -> mdm_tools::video::Subs
     }
 }
 
-/// MDM's engine for a video's streams (#769): this many connections each, through this
-/// command's connection.
-fn video_engine(connections: u32) -> mdm_tools::streams::Engine {
+/// MDM's engine for a video's (or a gallery's) streams (#769): this many connections each,
+/// through this command's connection, or a site rule's proxy for its page (#1960), as the app's
+/// download of it and yt-dlp's look-up get.
+fn video_engine(connections: u32, page: &str) -> mdm_tools::streams::Engine {
+    let mut opts = opts(connections);
+    if let Some(proxy) = url::Url::parse(page)
+        .ok()
+        .as_ref()
+        .and_then(mdm_tools::proc::site_proxy)
+    {
+        opts.proxy = proxy;
+    }
     mdm_tools::streams::Engine {
         handle: tokio::runtime::Handle::current(),
-        opts: opts(connections),
+        opts,
     }
 }
 
@@ -2248,8 +2298,9 @@ impl std::error::Error for NoFormat {}
 /// `User-Agent` header given is the only one sent), through this command's connection (#1556).
 /// The app's site rules for `url` (#1778) on what the command line gave: its number of
 /// connections (`given`, else the site's exception, else 8), the headers it didn't give, the
-/// rule's User-Agent unless one was given (the user's choice then: no other tried), and the
-/// browser-like connection from the first request.
+/// rule's User-Agent unless one was given (the user's choice then: no other tried), the
+/// browser-like connection from the first request, and the rule's proxy (#1960; none when the
+/// command gave its own, [`Conn::of`]).
 fn with_site_rules(
     sites: &SiteRules,
     url: &url::Url,
@@ -2266,6 +2317,9 @@ fn with_site_rules(
         browser_first: site.browser_like,
         ..opts
     };
+    if let Some(proxy) = &site.proxy {
+        opts.proxy = mdm_tools::proc::rule_proxy(proxy);
+    }
     let mut agent = site.user_agent;
     for (name, value) in &site.headers {
         if name.eq_ignore_ascii_case("user-agent") {
@@ -2460,16 +2514,29 @@ async fn watch(dl: Download, json: bool) -> anyhow::Result<()> {
     match dl.wait().await {
         Ok(out) => {
             let secs = started.elapsed().as_secs_f64();
+            // The server's own checksum didn't match (#2064): kept, and said.
+            let warning = out.checksum_warning.map(|algo| {
+                format!(
+                    "the server's {} checksum didn't match; the file may still be fine (check it if it matters)",
+                    algo.name()
+                )
+            });
             if json {
-                emit(
-                    json!({ "event": "done", "path": out.path, "size": out.size, "seconds": secs }),
-                );
+                let mut done =
+                    json!({ "event": "done", "path": out.path, "size": out.size, "seconds": secs });
+                if let Some(w) = &warning {
+                    done["warning"] = json!(w);
+                }
+                emit(done);
             } else {
                 println!(
                     "saved {} ({}) in {secs:.1}s",
                     out.path.display(),
                     mb(out.size)
                 );
+                if let Some(w) = &warning {
+                    eprintln!("warning: {w}");
+                }
             }
             Ok(())
         }
@@ -2493,25 +2560,41 @@ fn mb(b: u64) -> String {
     format!("{:.2} MB", b as f64 / (1 << 20) as f64)
 }
 
-/// A throwaway torrent session for the command line (its own state folder, nothing kept),
-/// through Torrent settings' SOCKS5 proxy when they say to use it (#1556), as the app's.
+/// A throwaway torrent session for the command line (its own state folder, nothing kept), as
+/// Torrent settings say ([`session_config`]).
 async fn torrents() -> anyhow::Result<(mdm_torrent::Torrents, tempfile::TempDir)> {
-    let proxy = match conn().torrent_proxy {
+    let dir = tempfile::tempdir()?;
+    let t = mdm_torrent::Torrents::start(session_config(&conn(), dir.path().to_owned())?).await?;
+    Ok((t, dir))
+}
+
+/// The command line's torrent session in `dir`: Torrent settings' network switches (the DHT off
+/// there is off here), their SOCKS5 proxy when they say to use it (#1556), and Options →
+/// Connection's network adapter (#2050), as the app's (bailing when the adapter is gone so no
+/// torrent traffic leaves another way).
+fn session_config(c: &Conn, dir: std::path::PathBuf) -> anyhow::Result<mdm_torrent::Config> {
+    let proxy = match &c.torrent_proxy {
         TorrentProxy::Off => None,
-        TorrentProxy::Through(p) => Some(p),
+        TorrentProxy::Through(p) => Some(p.clone()),
         TorrentProxy::Missing => anyhow::bail!(
             "Torrent settings say to use the proxy, and Options → Proxy / Socks has no SOCKS5 proxy: set one, or turn Use the proxy off"
         ),
     };
-    let dir = tempfile::tempdir()?;
-    let t = mdm_torrent::Torrents::start(mdm_torrent::Config {
+    let bind = mdm_torrent::Bind::for_route(&c.route)
+        .map_err(|adapter| anyhow::anyhow!("the network adapter {adapter} is not connected"))?;
+    let n = &c.torrent_net;
+    Ok(mdm_torrent::Config {
         // Its own folder, nothing of the person's is there: the engine may open what it makes.
         require_authorization: false,
         proxy,
-        ..mdm_torrent::Config::new(dir.path().to_owned())
+        bind,
+        dht: n.dht,
+        lsd: n.lsd,
+        upnp: n.upnp,
+        listen: n.listen,
+        utp: n.utp,
+        ..mdm_torrent::Config::new(dir)
     })
-    .await?;
-    Ok((t, dir))
 }
 
 /// `torrent` with Torrent settings' public tracker list (#1776) when it is on, as the app adds
@@ -2583,7 +2666,8 @@ mod tests {
             http: true,
             https: true,
         };
-        assert_eq!(proxy_arg("none", None), Ok(Proxy::None));
+        assert_eq!(proxy_arg("none", None), Ok(Proxy::Direct));
+        assert_eq!(proxy_arg("direct", None), Ok(Proxy::Direct));
         assert_eq!(proxy_arg(" System ", None), Ok(Proxy::System));
         assert_eq!(
             proxy_arg("127.0.0.1:7890", None),
@@ -2624,6 +2708,7 @@ mod tests {
                     ("X-Token".into(), "rule".into()),
                     ("Referer".into(), "https://rule.example.test/".into()),
                 ],
+                ..Default::default()
             }],
             exceptions: vec![("*.example.test".into(), 2)],
         };
@@ -2660,6 +2745,107 @@ mod tests {
         assert_eq!(got.max_connections, 8);
         assert!(!got.browser_first);
         assert!(headers.is_empty());
+    }
+
+    /// #1960: a rule's proxy for its sites (its own, or none) above the app's Options; the
+    /// command's own `--proxy` above every rule.
+    #[test]
+    fn a_site_rules_proxy_applies_unless_the_command_gives_one() {
+        use mdm_ipc::siterules::SiteRule;
+        let net = Net {
+            proxy: Proxy::Manual {
+                url: "http://10.0.0.9:3128".into(),
+                login: None,
+                http: true,
+                https: true,
+            },
+            sites: SiteRules {
+                rules: vec![
+                    SiteRule {
+                        site: "direct.example.test".into(),
+                        proxy: Some(String::new()),
+                        ..Default::default()
+                    },
+                    SiteRule {
+                        site: "*.example.test".into(),
+                        proxy: Some("socks5://127.0.0.1:1080".into()),
+                        proxy_user: "ann".into(),
+                        proxy_pass: "pw".into(),
+                        ..Default::default()
+                    },
+                ],
+                exceptions: Vec::new(),
+            },
+            ..Net::default()
+        };
+        let cmd = |args: &[&str]| {
+            Cli::try_parse_from(std::iter::once(NAME).chain(args.iter().copied()))
+                .unwrap()
+                .cmd
+        };
+        let base = |c: &Conn| Options {
+            proxy: c.proxy.clone(),
+            ..Options::default()
+        };
+        let url = |u: &str| u.parse::<url::Url>().unwrap();
+        let c = Conn::of(&cmd(&["get", "http://dl.example.test/f"]), &net);
+        let mut h = HeaderMap::new();
+        let got = with_site_rules(
+            &c.sites,
+            &url("http://dl.example.test/f"),
+            None,
+            &mut h,
+            base(&c),
+        );
+        assert_eq!(
+            got.proxy,
+            Proxy::Manual {
+                url: "socks5://127.0.0.1:1080".into(),
+                login: Some(("ann".into(), "pw".into())),
+                http: true,
+                https: true,
+            }
+        );
+        let got = with_site_rules(
+            &c.sites,
+            &url("http://direct.example.test/f"),
+            None,
+            &mut h,
+            base(&c),
+        );
+        assert_eq!(got.proxy, Proxy::None);
+        let got = with_site_rules(
+            &c.sites,
+            &url("http://other.test/f"),
+            None,
+            &mut h,
+            base(&c),
+        );
+        assert_eq!(got.proxy, net.proxy, "no rule: the app's Options");
+        // --proxy for this run: over every rule.
+        let c = Conn::of(
+            &cmd(&[
+                "get",
+                "http://dl.example.test/f",
+                "--proxy",
+                "http://127.0.0.1:8888",
+            ]),
+            &net,
+        );
+        let got = with_site_rules(
+            &c.sites,
+            &url("http://dl.example.test/f"),
+            None,
+            &mut h,
+            base(&c),
+        );
+        assert_eq!(got.proxy, proxy_arg("http://127.0.0.1:8888", None).unwrap());
+        assert!(
+            c.sites
+                .rules
+                .iter()
+                .all(|r| r.proxy.is_none() && r.proxy_pass.is_empty())
+        );
     }
 
     /// #1776: `torrent-get` adds the public list as the app does: to a public torrent, after its
@@ -2713,6 +2899,104 @@ mod tests {
         assert_eq!(public_list_added(&private, &[]), (private, None));
     }
 
+    /// `torrent-info` and `torrent-get` take Torrent settings' network switches: the DHT turned
+    /// off there isn't started here, nor local discovery, UPnP, incoming connections or uTP.
+    #[test]
+    fn the_torrent_commands_take_torrent_settings_switches() {
+        let off = TorrentNet {
+            dht: false,
+            lsd: false,
+            upnp: false,
+            listen: false,
+            utp: false,
+        };
+        let net = Net {
+            torrent_net: off,
+            ..Net::default()
+        };
+        let cmd = Cli::try_parse_from([NAME, "torrent-info", "x.torrent"])
+            .unwrap()
+            .cmd;
+        let dir = std::path::PathBuf::from("state");
+        let c = session_config(&Conn::of(&cmd, &net), dir.clone()).unwrap();
+        assert_eq!(
+            (c.dht, c.lsd, c.upnp, c.listen, c.utp),
+            (false, false, false, false, false)
+        );
+        assert_eq!((c.proxy, c.require_authorization), (None, false));
+        // Without the app's settings: the engine's defaults.
+        let c = session_config(&Conn::of(&cmd, &Net::default()), dir).unwrap();
+        assert_eq!(
+            (c.dht, c.lsd, c.upnp, c.listen, c.utp),
+            (true, true, true, true, true)
+        );
+    }
+
+    /// #2050: `torrent-info` and `torrent-get` bind their session to Options → Connection's
+    /// chosen network adapter, and refuse to start when that adapter is gone (kill switch).
+    #[test]
+    fn the_torrent_commands_bind_to_the_chosen_adapter() {
+        let dir = std::path::PathBuf::from("state");
+        let cmd = |args: &[&str]| {
+            Cli::try_parse_from(std::iter::once(NAME).chain(args.iter().copied()))
+                .unwrap()
+                .cmd
+        };
+
+        // No adapter chosen: no bind restriction.
+        let c = session_config(
+            &Conn::of(&cmd(&["torrent-info", "x.torrent"]), &Net::default()),
+            dir.clone(),
+        )
+        .unwrap();
+        assert_eq!(c.bind, None);
+
+        // A connected adapter: session binds to it as the app does.
+        let binding = std::sync::Arc::new(mdm_engine::net::Binding {
+            label: "WireGuard".into(),
+            name: "wg0".into(),
+            index: 7,
+            v4: Some(std::net::Ipv4Addr::new(10, 8, 0, 2)),
+            v6: None,
+            loopback_too: false,
+        });
+        let bound_conn = Conn {
+            route: mdm_engine::Route::Bound(binding),
+            ..Conn::default()
+        };
+        let bound_cfg = session_config(&bound_conn, dir.clone()).unwrap();
+        #[cfg(windows)]
+        assert_eq!(
+            bound_cfg.bind,
+            Some(mdm_torrent::Bind::Address(std::net::IpAddr::V4(
+                std::net::Ipv4Addr::new(10, 8, 0, 2)
+            )))
+        );
+        #[cfg(not(windows))]
+        assert_eq!(
+            bound_cfg.bind,
+            Some(mdm_torrent::Bind::Device {
+                name: "wg0".into(),
+                v4_only: true
+            })
+        );
+
+        // Disconnected / missing adapter: kill switch fails closed before starting a session.
+        let net_down = Net {
+            adapter: "no-such-adapter-2050".into(),
+            ..Net::default()
+        };
+        for args in [
+            ["torrent-info", "x.torrent"].as_slice(),
+            ["torrent-get", "x.torrent"].as_slice(),
+        ] {
+            let err = session_config(&Conn::of(&cmd(args), &net_down), dir.clone()).unwrap_err();
+            let msg = err.to_string();
+            assert!(msg.contains("no-such-adapter-2050"), "{msg}");
+            assert!(msg.contains("not connected"), "{msg}");
+        }
+    }
+
     /// #1556: a command goes through the app's network settings, its own switches over them.
     #[test]
     fn a_command_takes_the_apps_network_and_its_own_switches() {
@@ -2721,6 +3005,7 @@ mod tests {
             dns: parse_dns("quad9-tls").unwrap(),
             adapter: String::new(),
             torrent_proxy: TorrentProxy::Through("socks5://127.0.0.1:1080".into()),
+            torrent_net: TorrentNet::default(),
             public_trackers: None,
             sites: SiteRules::default(),
         };
@@ -2747,7 +3032,7 @@ mod tests {
         );
         assert_eq!(
             (c.proxy, c.dns),
-            (Proxy::None, mdm_engine::DnsChoice::default())
+            (Proxy::Direct, mdm_engine::DnsChoice::default())
         );
         let c = Conn::of(&cmd(&["install-ytdlp", "--proxy", "socks5h://h:1"]), &net);
         assert!(matches!(c.proxy, Proxy::Manual { ref url, .. } if url == "socks5h://h:1"));
@@ -2790,7 +3075,7 @@ mod tests {
         );
         assert_eq!(
             (c.proxy, c.dns),
-            (Proxy::None, mdm_engine::DnsChoice::default())
+            (Proxy::Direct, mdm_engine::DnsChoice::default())
         );
         let c = Conn::of(
             &cmd(&[

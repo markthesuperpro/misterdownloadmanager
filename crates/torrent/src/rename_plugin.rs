@@ -12,7 +12,7 @@ use std::io::IoSlice;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-use librqbit::storage::filesystem::FilesystemStorageFactory;
+use librqbit::storage::filesystem::{FilesystemStorageFactory, open_files::OpenFiles};
 use librqbit::storage::{BoxStorageFactory, StorageFactory, StorageFactoryExt, TorrentStorage};
 use librqbit::{ManagedTorrentShared, TorrentMetadata};
 
@@ -171,12 +171,19 @@ pub fn apply_from_memory(hash: &str, entries: &mut [crate::FileEntry]) {
 pub struct RenameStorageFactory {
     session_dir: PathBuf,
     guarded: bool,
+    open_files: &'static OpenFiles,
 }
 
-pub fn storage_factory(session_dir: PathBuf, guarded: bool) -> BoxStorageFactory {
+/// `open_files`: the budget of open file handles the torrents' files count in.
+pub fn storage_factory(
+    session_dir: PathBuf,
+    guarded: bool,
+    open_files: &'static OpenFiles,
+) -> BoxStorageFactory {
     RenameStorageFactory {
         session_dir,
         guarded,
+        open_files,
     }
     .boxed()
 }
@@ -195,9 +202,13 @@ impl StorageFactory for RenameStorageFactory {
             Box::new(crate::authorized_storage::Storage::new(
                 self.session_dir.clone(),
                 hash,
+                self.open_files,
             ))
         } else {
-            Box::new(FilesystemStorageFactory::default().create(shared, metadata)?)
+            Box::new(
+                FilesystemStorageFactory::with_open_files(self.open_files)
+                    .create(shared, metadata)?,
+            )
         };
         Ok(RenameStorage { inner, custom })
     }
@@ -283,11 +294,80 @@ impl TorrentStorage for RenameStorage {
             custom: self.custom.clone(),
         }))
     }
+
+    // librqbit gives these a default that does nothing: not forwarded, a paused torrent would
+    // keep its files open, and a finished one a handle that can write.
+    fn close_files(&self) -> anyhow::Result<()> {
+        self.inner.close_files()
+    }
+
+    fn on_file_completed(&self, file_id: usize) -> anyhow::Result<()> {
+        self.inner.on_file_completed(file_id)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What reached the storage the rename wrapper wraps.
+    #[derive(Default)]
+    struct Probe {
+        calls: std::sync::Arc<Mutex<Vec<String>>>,
+    }
+
+    impl TorrentStorage for Probe {
+        fn init(&mut self, _: &ManagedTorrentShared, _: &TorrentMetadata) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn pread_exact(&self, _: usize, _: u64, _: &mut [u8]) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn pwrite_all(&self, _: usize, _: u64, _: &[u8]) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn remove_file(&self, _: usize, _: &Path) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn remove_directory_if_empty(&self, _: &Path) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn ensure_file_length(&self, _: usize, _: u64) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn take(&self) -> anyhow::Result<Box<dyn TorrentStorage>> {
+            anyhow::bail!("not used")
+        }
+        fn close_files(&self) -> anyhow::Result<()> {
+            self.calls.lock().unwrap().push("close_files".into());
+            Ok(())
+        }
+        fn on_file_completed(&self, file_id: usize) -> anyhow::Result<()> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("on_file_completed({file_id})"));
+            Ok(())
+        }
+    }
+
+    /// The hooks librqbit gives a default reach the storage underneath: a wrapper that ate
+    /// them would keep a paused torrent's files open.
+    #[test]
+    fn the_wrapper_passes_on_what_has_a_default() {
+        let probe = Probe::default();
+        let calls = probe.calls.clone();
+        let storage = RenameStorage {
+            inner: Box::new(probe),
+            custom: None,
+        };
+        storage.close_files().unwrap();
+        storage.on_file_completed(2).unwrap();
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec!["close_files".to_owned(), "on_file_completed(2)".to_owned()]
+        );
+    }
 
     #[test]
     fn rename_persistence_and_storage_type_id() {
@@ -307,7 +387,11 @@ mod tests {
         apply_to_entries(dir.path(), hash, &mut entries);
         assert_eq!(entries[0].path, PathBuf::from("RenamedVideo.mp4"));
 
-        let factory = storage_factory(dir.path().to_path_buf(), false);
+        let factory = storage_factory(
+            dir.path().to_path_buf(),
+            false,
+            librqbit::storage::filesystem::open_files::global(),
+        );
         assert!(factory.is_type_id(TypeId::of::<FilesystemStorageFactory>()));
 
         remove_renamed_file(dir.path(), hash);

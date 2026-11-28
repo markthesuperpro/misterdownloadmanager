@@ -15,7 +15,8 @@
 //! (#1772) are listed through their sites' APIs: one package, its folder the address's path
 //! under the download folder (a site's subfolders kept from its root), each file in its own
 //! folders inside it, unticked (ticked only as wanted), with the size and the digest the site
-//! gives.
+//! gives. A shared Google Drive folder (#2032) is one package too, its files and subfolders'
+//! ticked, in the folder's name under the download folder.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -254,7 +255,7 @@ pub struct Listed {
 pub type Read = Arc<Mutex<Option<Listed>>>;
 
 /// An address Link grabber reads for its files rather than downloads: an FTP folder (#1774), a
-/// Hugging Face repository or a GitHub release (#1772).
+/// Hugging Face repository or a GitHub release (#1772), a Google Drive folder (#2032).
 pub fn is_listing(url: &Url) -> bool {
     mdm_engine::folder::is_ftp_folder(url) || mdm_engine::hub::Source::of(url).is_some()
 }
@@ -394,29 +395,42 @@ impl Grabber {
                 pictures.insert(address_key(&url), self.links.len());
             }
             let magnet = url.scheme() == "magnet";
-            let name = mdm_engine::naming::sanitize(&if magnet {
-                magnet_name(&url)
-            } else {
-                mdm_engine::naming::file_name(None, &url)
+            let given_name = d
+                .name
+                .as_deref()
+                .and_then(mdm_engine::naming::single_file_name);
+            let name = given_name.unwrap_or_else(|| {
+                mdm_engine::naming::sanitize(&if magnet {
+                    magnet_name(&url)
+                } else {
+                    mdm_engine::naming::file_name(None, &url)
+                })
             });
             let known = known(&url);
             let origin = if known {
                 Origin::Known
-            } else if let Some(site) = d.package.as_deref().filter(|p| !p.trim().is_empty()) {
-                Origin::Site(site.trim().to_owned())
             } else if !d.folder.is_empty() {
                 // Its folder's page, named as a page's package is, its folders' names as
-                // they read (`my files`, not `my%20files`).
-                let page = match Origin::of(&url, "", d.referer.as_deref()) {
-                    Origin::Page(page) => percent_encoding::percent_decode_str(&page)
+                // they read (`my files`, not `my%20files`); a site's own name for it when it
+                // gave one (#2032: a Google Drive folder's, whose page is an ID).
+                let given = d
+                    .package
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|p| !p.is_empty());
+                let page = match (given, Origin::of(&url, "", d.referer.as_deref())) {
+                    (Some(name), _) => name.to_owned(),
+                    (None, Origin::Page(page)) => percent_encoding::percent_decode_str(&page)
                         .decode_utf8_lossy()
                         .into_owned(),
-                    _ => url.host_str().unwrap_or_default().to_owned(),
+                    (None, _) => url.host_str().unwrap_or_default().to_owned(),
                 };
                 Origin::Folder {
                     page,
                     folder: d.folder.clone(),
                 }
+            } else if let Some(site) = d.package.as_deref().filter(|p| !p.trim().is_empty()) {
+                Origin::Site(site.trim().to_owned())
             } else {
                 Origin::of(&url, &name, d.referer.as_deref())
             };
@@ -774,7 +788,7 @@ impl Grabber {
                     l.page = info.web_page;
                     l.size = info.size;
                     let named = mdm_engine::naming::sanitize(&info.file_name);
-                    if !named.is_empty() && named != l.name {
+                    if l.found.name.is_none() && !named.is_empty() && named != l.name {
                         l.category = category_of(l.magnet, &named);
                         l.name = named;
                         moved.push(l.pkg);
@@ -1041,17 +1055,19 @@ impl Grabber {
         );
         let body = Rect::from_min_max(pos2(inner.left(), head.bottom()), inner.max);
         if self.links.is_empty() {
-            // i18n: Link grabber, while it is empty
-            let note = crate::i18n::t(
-                "Paste links here (Ctrl+V), or send a page's links from the browser.",
-            );
-            let w = winui::text_width(&p, note);
-            text(
+            winui::empty_state(
+                ui,
                 &p,
-                body.center().x - w / 2.0,
-                body.center().y + 4.0,
-                note,
-                winui::MUTED(),
+                winui::rect(body),
+                crate::icons::EmptyIcon::Links,
+                // i18n: Link grabber: the title in its empty list
+                crate::i18n::mark("No links yet"),
+                // i18n: Link grabber, while it is empty
+                crate::i18n::mark(
+                    "Paste links here (Ctrl+V), or send a page's links from the browser.",
+                ),
+                None,
+                "grabber-empty",
             );
             return;
         }
@@ -1525,8 +1541,10 @@ pub fn state_of(e: &mdm_engine::Error) -> LinkState {
 /// A package's files (#1772) as Link grabber lists them, from what its site's API said (`from`:
 /// the address given, its agent and private mark): one package whose folder is the address's
 /// path under the download folder, each file with its folders inside it, its size and its
-/// site's digest, unticked, the package's page its referer. The Source line says what was left
-/// out, and that a gated repository needs an access token when there is none (`token`).
+/// site's digest, unticked, the package's page its referer. A Google Drive folder's (#2032):
+/// its folder's name the package's folder, each file named as Drive has it, ticked, with the
+/// browser's sign-in when it came with one (`from`'s cookies). The Source line says what was
+/// left out, and that a gated repository needs an access token when there is none (`token`).
 pub fn package_read(
     listed: Result<mdm_engine::hub::Package, mdm_engine::hub::HubError>,
     from: &Imported,
@@ -1549,8 +1567,23 @@ pub fn package_read(
         if p.capped { ", listed in part" } else { "" },
         if p.refused > 0 { ", some left out" } else { "" },
     );
+    let drive = p.site == mdm_engine::hub::Site::GoogleDrive;
     let mut notes = Vec::new();
-    if p.capped {
+    if p.capped && drive {
+        notes.push(crate::i18n::fmt(
+            // i18n: Link grabber's Source line: a Google Drive folder ({folder}: its name) in which a folder showed the most items Drive's page lists ({n}: 50), so it may hold more than are listed; what gets them all (Drive's own Download button, which makes a zip)
+            crate::i18n::t(
+                "{folder}: Google Drive's page lists only the first {n} items of a folder, so some may be missing; Drive's own Download gets the whole folder as a zip",
+            ),
+            &[
+                ("folder", &p.name),
+                (
+                    "n",
+                    &crate::i18n::integer(mdm_engine::sites::gdrive::FOLDER_PAGE as u64),
+                ),
+            ],
+        ));
+    } else if p.capped {
         notes.push(crate::i18n::fmt(
             crate::i18n::t("{folder}: only its first {n} files"),
             &[
@@ -1570,6 +1603,17 @@ pub fn package_read(
             &[("package", &p.name)],
         ));
     }
+    if p.not_files > 0 {
+        notes.push(crate::i18n::fmt(
+            &crate::i18n::tn(
+                p.not_files as u64,
+                // i18n: Link grabber's Source line: a Google Drive folder's ({package}: its name) items that aren't files to download (Google Forms, shortcuts, Google Sites) are left out; {n} how many
+                "{package}: {n} item left out, a Google Form, shortcut or Site isn't a file",
+                "{package}: {n} items left out, Google Forms, shortcuts and Sites aren't files",
+            ),
+            &[("package", &p.name)],
+        ));
+    }
     if p.gated && !token {
         notes.push(crate::i18n::fmt(
             // i18n: Link grabber's Source line: a gated Hugging Face repository ({package}: "owner/name"), whose files download only for an account that accepted its terms: where to give the account's access token (Options → Sites Logins, keep the names as the Options window shows them)
@@ -1585,14 +1629,23 @@ pub fn package_read(
         .into_iter()
         .map(|f| Imported {
             url: f.url.into(),
+            // A Drive file's link names nothing (`…/view`): its name is the folder's.
+            name: drive.then_some(f.name),
+            // And the package is named after the folder, not its page's address (an ID).
+            package: drive.then(|| p.name.clone()),
             referer: Some(page.clone()),
+            // The browser's Google sign-in, for a folder shared with the account only: its
+            // files are Drive's too.
+            cookies: if drive { from.cookies.clone() } else { None },
             user_agent: from.user_agent.clone(),
             private: from.private,
             folder: p.folder.clone(),
             within: f.folders,
             size: f.size,
             checksum: f.digest,
-            unticked: true,
+            // A repository's or a release's files are ticked as wanted (#1772); a folder's
+            // link is for its files (#2032).
+            unticked: !drive,
             ..Default::default()
         })
         .collect();
@@ -1606,9 +1659,21 @@ pub fn package_read(
 /// Why a package (#1772) couldn't be listed, as its row's status: the words the row shows and the
 /// whole sentence, a rate limit's with how long to wait.
 pub fn hub_state(e: &mdm_engine::hub::HubError) -> LinkState {
-    use mdm_engine::hub::HubError;
+    use mdm_engine::hub::{HubError, Site};
     let site = |s: mdm_engine::hub::Site| s.name();
     match e {
+        // Google Drive answers 429 to anyone, signed in or not.
+        HubError::Limited {
+            site: s @ Site::GoogleDrive,
+            ..
+        } => LinkState::Failed {
+            short: crate::i18n::t("Try again later").to_owned(),
+            full: crate::i18n::fmt(
+                // i18n: Link grabber, a Google Drive folder's status (the cell's hover tip): Drive ({site}: "Google Drive") answered that it gets too many requests from this computer
+                crate::i18n::t("{site} is getting too many requests from this computer: try again later."),
+                &[("site", site(*s))],
+            ),
+        },
         HubError::Limited { site: s, wait } => {
             let full = match wait {
                 Some(w) => crate::i18n::fmt(
@@ -1634,6 +1699,14 @@ pub fn hub_state(e: &mdm_engine::hub::HubError) -> LinkState {
                 full,
             }
         }
+        HubError::NotFound(s @ Site::GoogleDrive) => LinkState::Failed {
+            short: crate::i18n::t("Not found").to_owned(),
+            full: crate::i18n::fmt(
+                // i18n: Link grabber, the hover tip of a Google Drive folder's status ({site}: "Google Drive"): no folder at this link, or one the signed-in account may not open
+                crate::i18n::t("{site} has no such folder, or it isn't shared with you."),
+                &[("site", site(*s))],
+            ),
+        },
         HubError::NotFound(s) => LinkState::Failed {
             // i18n: Link grabber, a link's status: a Hugging Face repository or folder, or a GitHub release or tag, that isn't there. The sentence is the cell's hover tip
             short: crate::i18n::t("Not found").to_owned(),
@@ -1667,6 +1740,15 @@ pub fn hub_state(e: &mdm_engine::hub::HubError) -> LinkState {
                 full,
             }
         }
+        HubError::SignIn(_) => LinkState::Failed {
+            // i18n: Link grabber, a link's status: a Google Drive folder that isn't shared with everyone needs the browser's Google sign-in. The sentence is the cell's hover tip
+            short: crate::i18n::t("Needs a sign-in").to_owned(),
+            // i18n: Link grabber, the hover tip of a Google Drive folder's status: the folder isn't shared with everyone; how to send it with the browser's sign-in (the browser's right-click command, keep its name as the browser extension shows it)
+            full: crate::i18n::t(
+                "This Google Drive folder needs you to sign in: sign in to Google in your browser, then right-click the folder's link there and choose Download with Mister Download Manager.",
+            )
+            .to_owned(),
+        },
         HubError::Net(e) => state_of(e),
     }
 }
@@ -1855,6 +1937,41 @@ mod tests {
         // One kind of file: its category's folder.
         let various = picked.iter().find(|p| p.links[0].1 == "song.mp3").unwrap();
         assert_ne!(various.folder, PathBuf::new());
+    }
+
+    /// #1963: `.ef2` blocks with `filename:` show that name in Link grabber, categorize by its
+    /// extension, keep only the final file name component, and preserve it across link checks.
+    #[test]
+    fn ef2_filename_shows_and_categorizes_in_grabber() {
+        let ef2 = "<\r\nhttps://cdn.example.org/1225296974-1-30112.m4s\r\nreferer: https://www.bilibili.com/\r\nfilename: ..\\nested/01 - Title.mp4\r\n>\r\n\
+                   <\r\nhttps://cdn.example.org/1225296974-1-30280.m4s\r\nreferer: https://www.bilibili.com/\r\nfilename: 01 - Title.m4a\r\n>\r\n\
+                   <\r\nhttps://cdn.example.org/fallback.bin\r\n>\r\n";
+        let found = crate::transfer::import(ef2);
+        assert_eq!(found.len(), 3);
+        let mut g = grabber();
+        g.add(found, "list.ef2".into(), |_| false);
+
+        assert_eq!(g.links[0].name, "01 - Title.mp4");
+        assert_eq!(g.links[0].category, Category::Video);
+        assert_eq!(g.links[1].name, "01 - Title.m4a");
+        assert_eq!(g.links[1].category, Category::Music);
+        assert_eq!(g.links[2].name, "fallback.bin");
+
+        // Link checks update size/state without overwriting the explicit `.ef2` filename.
+        let slot = Arc::new(Mutex::new(Some(Ok(mdm_engine::ProbeInfo {
+            final_url: "https://cdn.example.org/1225296974-1-30112.m4s"
+                .parse()
+                .unwrap(),
+            size: Some(1024),
+            file_name: "1225296974-1-30112.m4s".into(),
+            server: None,
+            web_page: false,
+        }))));
+        g.links[0].check = Some(slot);
+        g.take_answers();
+        assert_eq!(g.links[0].name, "01 - Title.mp4");
+        assert_eq!(g.links[0].size, Some(1024));
+        assert!(matches!(g.links[0].state, LinkState::Online));
     }
 
     #[test]
@@ -2123,6 +2240,7 @@ mod tests {
             capped: false,
             refused: 2,
             gated: true,
+            not_files: 0,
         };
         *slot.lock().unwrap() = Some(package_read(Ok(package), &link(repo, None), false));
         let read = g.pages_read();
@@ -2182,6 +2300,108 @@ mod tests {
                 assert_eq!(short, "Try again later");
                 assert!(
                     full.contains("GitHub") && full.contains("2 minutes"),
+                    "{full}"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// #2032: a Google Drive folder's link is listed, not looked up; its files come as one
+    /// package in the folder's name, ticked, named as Drive has them (their links name
+    /// nothing), in their subfolders, with the browser's sign-in the link came with. A folder
+    /// that isn't shared with everyone says how to send it with the sign-in.
+    #[test]
+    fn a_drive_folders_files_come_ticked_with_their_names() {
+        use mdm_engine::hub::{File, HubError, Package, Site};
+        let id = "1KpLl_1tcK0eeehzN980zbG-3M2nhbVks";
+        let folder = format!("https://drive.google.com/drive/folders/{id}?usp=sharing");
+        let sent = Imported {
+            cookies: Some("SID=x".into()),
+            ..link(&folder, None)
+        };
+        let mut g = grabber();
+        g.add(vec![sent.clone()], "Pasted".into(), |_| false);
+        assert!(g.to_check().is_empty(), "a folder isn't looked up");
+        let reads = g.to_read();
+        assert_eq!(reads.len(), 1);
+        assert_eq!(reads[0].2.cookies.as_deref(), Some("SID=x"));
+        let slot: Read = Default::default();
+        g.reading(reads[0].0, slot.clone());
+        let file = |n: &str, folders: &[&str], name: &str, size| File {
+            url: Url::parse(&format!(
+                "https://drive.google.com/file/d/{}{n}/view",
+                "1".repeat(30)
+            ))
+            .unwrap(),
+            folders: folders.iter().map(|f| (*f).to_owned()).collect(),
+            name: name.to_owned(),
+            size,
+            digest: None,
+        };
+        let package = Package {
+            site: Site::GoogleDrive,
+            name: "Holiday photos".into(),
+            page: Url::parse(&format!("https://drive.google.com/drive/folders/{id}")).unwrap(),
+            folder: vec!["Holiday photos".into()],
+            files: vec![
+                file("a", &[], "beach.jpg", Some(10)),
+                file("b", &["Day 2"], "hills.jpg", Some(20)),
+                file("c", &[], "Plan.docx", None),
+            ],
+            capped: true,
+            refused: 0,
+            gated: false,
+            not_files: 2,
+        };
+        *slot.lock().unwrap() = Some(package_read(Ok(package), &sent, false));
+        for (links, note) in g.pages_read() {
+            g.add(links, note, |_| false);
+        }
+        assert!(
+            g.source.contains("Holiday photos: 2 items left out"),
+            "{}",
+            g.source
+        );
+        assert!(g.source.contains("first 50 items"), "{}", g.source);
+        let files: Vec<&Link> = g.links.iter().skip(1).collect();
+        let names: Vec<String> = files.iter().map(|l| l.shown_name()).collect();
+        assert_eq!(names, ["beach.jpg", "Day 2/hills.jpg", "Plan.docx"]);
+        assert!(files.iter().all(|l| l.on), "a folder's files come ticked");
+        // The Doc's size comes with its export: it is looked up, the others aren't.
+        let to_check: Vec<String> = g.to_check().iter().map(|c| c.1.to_string()).collect();
+        assert_eq!(to_check.len(), 1);
+        assert!(to_check[0].ends_with("1c/view"), "{to_check:?}");
+        let dl = PathBuf::from("D:\\dl");
+        assert_eq!(
+            g.packages[files[0].pkg].folder,
+            dl.join("Holiday photos").display().to_string()
+        );
+        assert_eq!(g.packages[files[0].pkg].name, "Holiday photos");
+        let picked = g.picked();
+        assert_eq!(picked.len(), 1);
+        let hills = picked[0].links.iter().find(|l| l.1 == "hills.jpg").unwrap();
+        assert_eq!(hills.0.within, ["Day 2"]);
+        assert_eq!(hills.0.cookies.as_deref(), Some("SID=x"));
+        assert_eq!(
+            hills.0.referer.as_deref(),
+            Some(format!("https://drive.google.com/drive/folders/{id}").as_str())
+        );
+
+        // Not shared with everyone, sent without the browser's sign-in.
+        let mut g = grabber();
+        g.add(vec![link(&folder, None)], "Pasted".into(), |_| false);
+        let reads = g.to_read();
+        let slot: Read = Default::default();
+        g.reading(reads[0].0, slot.clone());
+        let e = HubError::SignIn(Site::GoogleDrive);
+        *slot.lock().unwrap() = Some(package_read(Err(e), &link(&folder, None), false));
+        assert!(g.pages_read().is_empty());
+        match &g.links[0].state {
+            LinkState::Failed { short, full } => {
+                assert_eq!(short, "Needs a sign-in");
+                assert!(
+                    full.contains("Download with Mister Download Manager"),
                     "{full}"
                 );
             }

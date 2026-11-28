@@ -569,9 +569,114 @@ Bug fixes from the first days of 0.5.0, a Safari extension, and more file types.
 
 Everything below ships together, in version 0.6.0, the next release.
 
+- ✅ Download video: choose the language of a video's sound when it comes in several (YouTube's
+  dubbed tracks), the original first and marked; every quality, Audio only and MP3, Opus and
+  FLAC take that language's sound, and the button over a video says each line's language.
+  Options → Regional chooses one for every video and playlist, the original when a video lacks
+  it ([#1961](https://github.com/anefzaoui/misterdownloadmanager/issues/1961); thanks to
+  [@toji2002](https://github.com/toji2002), [@Hanif-afzal](https://github.com/Hanif-afzal) and
+  [@twistedwolfyt00](https://github.com/twistedwolfyt00))
+- ✅ Audio only downloads: the video's thumbnail as the cover of an MP3, M4A, Opus or FLAC file,
+  put in by ffmpeg without encoding the sound again; a box in Download video, kept as you leave
+  it ([#1962](https://github.com/anefzaoui/misterdownloadmanager/issues/1962); thanks to
+  [@twistedwolfyt00](https://github.com/twistedwolfyt00))
+- ✅ MDM's window toolkit (egui) on the same copy as the Craft suite's libraries (storytold's
+  `next`), MDM's own fixes rebased on it: every window, menus included, connected to screen
+  readers before it first shows, and accessibility stays on while any window is read
+- ✅ The shared Craft libraries for saving files and for translations brought up to date: the
+  temporary files a save cut short by a crash leaves in the data folder are removed at the next
+  start, and a file saved over keeps more of the original (its attributes, its group)
+- ✅ The shared Craft libraries for saving files and for translations brought up to date: the
+  temporary files a save cut short by a crash leaves in the data folder are removed at the next
+  start, and a file saved over keeps more of the original (its attributes, its group)
+- ✅ Google Drive shared folders: a folder's link in Add URL, Link grabber or the browser's
+  right-click command opens its files and its subfolders' in Link grabber, ticked, named and
+  sized as Drive lists them, downloaded into the same folders on disk; Docs, Sheets and Slides
+  as Office files; a folder shared with your account only, with the browser's sign-in; Drive's
+  refusals said per file as for single files, and a folder of more than 50 items said as listed
+  in part ([#2032](https://github.com/anefzaoui/misterdownloadmanager/issues/2032))
+- ✅ **No proxy/socks** chosen in Options → Proxy / Socks keeps yt-dlp and gallery-dl direct too, off Windows'
+  proxy and the proxy variables; the untouched default still follows them, and so does a list saved before
+  ([#1616](https://github.com/anefzaoui/misterdownloadmanager/issues/1616))
+- ✅ The window no longer freezes while an antivirus scans a file MDM opens
+  ([#1292](https://github.com/anefzaoui/misterdownloadmanager/issues/1292); thanks to
+  [@seifmoustafa](https://github.com/seifmoustafa) and
+  [@fernandopeguero](https://github.com/fernandopeguero)): fonts, archive tests, Options' look
+  for 7-Zip, theme files and sounds are read beside the window, and test builds log any file
+  the window's thread opens
+- ✅ The command line's `torrent-info` and `torrent-get` hold their torrent session to the network
+  adapter chosen in Options → Connection, and don't start while it isn't connected
+  ([#2050](https://github.com/anefzaoui/misterdownloadmanager/issues/2050); thanks to
+  [@abdul-karim-mia](https://github.com/abdul-karim-mia))
+- ✅ Every pull request and every change to main is scanned for signs of a tampered commit: code
+  hidden at the end of long lines, scripts that run on install or when a folder opens, files that
+  aren't what their name says and known indicators; main's whole history once a week
+  (`tools/security/scan_suspicious.py`)
+- ✅ More file types in the built-in categories: apps and installers (APK, IPA, AppImage, DEB,
+  RPM, Flatpak, Snap, MSIX, DMG, PKG…) in Programs, disc and disk images (ISO, IMG, VHD, VMDK…)
+  and more archives in Compressed, e-books, OpenDocument files and spreadsheets in Documents,
+  OPUS, FLAC, M4B and AIFF in Music, M2TS and MTS in Video; a list you edited stays yours
+  ([#1725](https://github.com/anefzaoui/misterdownloadmanager/issues/1725); thanks to
+  [@twistedwolfyt00](https://github.com/twistedwolfyt00))
+- ✅ Website: live counters under the home page's contributors, the downloads from GitHub (every
+  file of every release) and the browser add-on's users (the Chrome Web Store and Firefox Add-ons), on
+  split-flap tiles that flip up from zero when the page opens; read at most every 15 minutes, the
+  build's figures when they can't be; the site's download figure is now GitHub's real count of every
+  file of every release, read at every build
+- ✅ Windows without a graphics card's driver (Windows Server, a virtual machine, Remote Desktop):
+  MDM offers once to download Mesa's software renderer (llvmpipe), with its size, and from
+  **View → Draw with**; nothing downloads without a click. Checked against MDM's signed list, it
+  draws from the next start before Windows' own software renderer (WARP), which keeps the
+  processor far busier; one that can't draw there is remembered, and WARP draws again
+  ([#476](https://github.com/anefzaoui/misterdownloadmanager/issues/476))
+- ✅ Browser integration on Windows reads the registry as the browsers do, its 32-bit part first: an older entry
+  there that leads nowhere no longer hides MDM's from Edge, Test browser integration says when one is in the way,
+  and MDM's start and its setup for everyone fix it
+  ([#1688](https://github.com/anefzaoui/misterdownloadmanager/issues/1688); thanks to
+  [@Priest6969](https://github.com/Priest6969))
+- ✅ A checksum the server announces that doesn't match no longer fails the download: the file is
+  kept, with a warning in the list, its log, Properties and Download complete; a checksum you
+  enter, or one the site publishes, still must match. A `Content-MD5` beside a body the server
+  says it transformed (PikPak's storage, a compressed answer) isn't checked
+  ([#2064](https://github.com/anefzaoui/misterdownloadmanager/issues/2064); thanks to
+  [@asasass](https://github.com/asasass))
+- ✅ Website FAQ: why installing yt-dlp or another helper times out where GitHub can't be reached, and what to do
+  (a proxy in Options → Proxy / Socks, or Helpers → Use another program)
+  ([#1926](https://github.com/anefzaoui/misterdownloadmanager/issues/1926); thanks to
+  [@HandSome507](https://github.com/HandSome507))
+- ✅ Site rules give a site a proxy: **No proxy** (straight to the site) or one of its own
+  (`host:port`, `socks5://…`) with its login, kept with MDM's other passwords; a download's own
+  proxy first, then the first rule that names the site and sets one, then Options. Video and
+  gallery look-ups for that site go through it too, and the network adapter still holds every
+  connection ([#1960](https://github.com/anefzaoui/misterdownloadmanager/issues/1960), from
+  [#1619](https://github.com/anefzaoui/misterdownloadmanager/discussions/1619); thanks to
+  [@MoeHero](https://github.com/MoeHero))
+- ✅ A download's progress window can start minimized: **Options → Downloads → Customize
+  "Download progress" dialog → Edit...** offers **Show normally**, **Show minimized** and
+  **Don't show** ([#1966](https://github.com/anefzaoui/misterdownloadmanager/issues/1966); thanks to
+  [@Raghav2012Code](https://github.com/Raghav2012Code))
+- ✅ Import: an `.ef2` list's `filename:` lines name its downloads (only a file name: folder parts
+  are left out), shown in Link grabber before they are added
+  ([#1963](https://github.com/anefzaoui/misterdownloadmanager/issues/1963); thanks to
+  [@abdul-karim-mia](https://github.com/abdul-karim-mia))
 - ✅ Each browser's logo before its name in the browser extension's window, the first start's
   browser step and Options → General's browser list, sharp at every display scale; a globe for a
   browser without one
+- ✅ Icons where they help recognition, second part
+  ([#2008](https://github.com/anefzaoui/misterdownloadmanager/issues/2008)): drop-down lists with
+  icons (the categories' in Download File Info and Options → Save to, the queues' in Download
+  later, the browsers' logos in Sites Logins' cookies list); a drawn mark before error and warning
+  lines; one empty-list block (icon, title, what goes there) for RSS feeds, Accounts, Site rules,
+  the Scheduler's files, Add torrent and Link grabber
+- ✅ Icons where they help recognition, first part
+  ([#2008](https://github.com/anefzaoui/misterdownloadmanager/issues/2008)): a status icon before
+  each download's status in the list and the tray panel, in every theme (a theme's own, else
+  MDM's); drawn check and cross marks in Test browser integration and beside "Installed" and
+  "Connected", with the browser's logo on its line; file-type icons in the tray panel; the
+  helpers' role icons in the Helpers window, a new one for gallery-dl
+- 📋 Icons where they help recognition, the rest of
+  [#2008](https://github.com/anefzaoui/misterdownloadmanager/issues/2008): icons in combo boxes
+  (categories, queues, the cookies' browser), message lines, empty lists and the smaller touches
 - ✅ The browser add-on's **Download video** button can be scaled (**80%**, **100%**, **120%**) beside **Button size** in **Options → General → Download panels**, keeps free interior positions when dragged anywhere over the player, offers **Hide the download button in full screen** directly in its menu, and respects DOM full-screen hiding inside embedded frames
   ([#1923](https://github.com/anefzaoui/misterdownloadmanager/issues/1923))
 - ✅ The first start's setup in one window: the language, the video helpers (each with its own
@@ -582,6 +687,9 @@ Everything below ships together, in version 0.6.0, the next release.
 - ✅ CodeQL no longer reads the windows' control names as salts or passwords: the shared drawing
   helpers call a control's name `id` and a box that hides its text `masked`; nothing changes on
   screen
+- ✅ Windows: the tiny window MDM's window toolkit keeps for its own messages is made far off the
+  screens, not at the top left of the main screen. It was never drawn, but programs that list
+  windows saw it there, and MDM's off-screen test runs left it on the screen
 - ✅ Windows: a graphics driver reset no longer keeps MDM off Direct3D 12 for a month: a start
   just after it that finds no graphics card yet isn't remembered, and the next start draws on the
   card again ([#1974](https://github.com/anefzaoui/misterdownloadmanager/issues/1974))
@@ -657,6 +765,19 @@ Everything below ships together, in version 0.6.0, the next release.
   `path.utf-8`), the command line's torrents on Windows past a file another program has open,
   a file's progress past an empty file, and several torrents added at once without waiting for
   each other
+- ✅ Torrents: downloads pick up within seconds when the network comes back (Wi-Fi, sleep, VPN),
+  instead of staying stalled: the peers that dropped with it are called again once, at once, and
+  the trackers and the DHT asked again
+- ✅ Torrents: a paused torrent no longer keeps its files locked, and a finished one lets other
+  programs open, move or rename them (on Windows, held read-only while it is shared)
+- ✅ Torrents: files you didn't tick are no longer created on disk; big torrents keep fewer
+  files open (a budget for the whole of MDM, the least recently used file closed first)
+- ✅ Tests: the check that a torrent picks up when the network comes back no longer fails now and
+  then (seen on a Windows runner): it took the torrent's first check of its files for the
+  download, as both count up the same number, and cut the network before the peer was ever
+  reached; each stage now waits for the session's own word (downloading, the peer given up, its
+  retry refused) instead of the time that should have passed
+- ✅ Torrents: a paused torrent's finished pieces are saved before MDM quits
 - ✅ Torrents: the engine checks what it's sent more carefully
 - ✅ Extracting: 7z and RAR archives are checked more carefully
 - ✅ Archive test: archives are checked more carefully
@@ -1418,6 +1539,10 @@ Everything below ships together, in version 0.6.0, the next release.
   ([#948](https://github.com/anefzaoui/misterdownloadmanager/issues/948))
 - ✅ A download refused for its site's security certificate says why (expired, not trusted, for
   another name) instead of a bare **Error** (follows [#762](https://github.com/anefzaoui/misterdownloadmanager/issues/762))
+- ✅ HTTPS servers with a self-signed, expired or untrusted certificate: when refused, MDM says why
+  and offers **Continue once**, **Always for this site** (pinned to the certificate's SHA-256
+  fingerprint, site and port) or **Cancel**, with allowed sites listed in **Options → Sites
+  Logins → Certificates...** where they can be removed ([#1964](https://github.com/anefzaoui/misterdownloadmanager/issues/1964))
 - ✅ **Options → Downloads → Customize "Download progress" dialog → Edit...** works: it can turn
   off the progress window that opens when a download starts; the button was greyed and did
   nothing ([#1041](https://github.com/anefzaoui/misterdownloadmanager/issues/1041))
@@ -1701,6 +1826,11 @@ Everything below ships together, in version 0.6.0, the next release.
   speed limits (a change applies at once), pause and resume like a file, after a restart too,
   and a fresh address from yt-dlp when one expires (part of
   [#769](https://github.com/anefzaoui/misterdownloadmanager/issues/769))
+- ✅ Videos in pieces (HLS) tested stopped and continued, after a restart, with expiring and failing
+  pieces, AES-128, byte ranges, discontinuities and several sounds and pictures (AC-3, MP2, HEVC,
+  MPEG-2), each checked for its length and a clean decode: the pieces on disk count only for the same
+  stream and list, a sound an MP4 can't hold (LATM) is saved as MPEG-TS instead of failing, parts of
+  one file a server sends whole are cut from it, a piece cut off without a length is asked again
 - ✅ Videos sent in pieces (HLS, DASH) through MDM's own downloader too, several pieces at once
   (as many as a file's connections), AES-128 pieces decrypted, expired pieces' addresses asked of
   yt-dlp again ([#531](https://github.com/anefzaoui/misterdownloadmanager/issues/531), part of
@@ -2222,6 +2352,26 @@ Everything below ships together, in version 0.6.0, the next release.
 - ✅ Tests: the download checks on 32-bit Windows no longer stop halfway now and then: the
   largest test downloads (up to 1 GiB) are compared with what they should hold a piece at a
   time, instead of both whole in memory at once, which a 32-bit test program couldn't always fit
+- ✅ Torrents: turning DHT off in Torrent settings now really keeps it off, also when MDM is
+  started for a magnet link or a .torrent file, and for the command line's `torrent-info` and
+  `torrent-get`; the other Torrent settings switches and the network adapter apply from the
+  first moment too
+- ✅ A screen reader says a download's size with one space before the unit ("1.00 MB"): the
+  Size column's padding for its looks ("1.00  MB", as IDM writes it) was read aloud, extra
+  space and all, both in the size cell and in the status of a download with no known total
+  ([#1407](https://github.com/anefzaoui/misterdownloadmanager/issues/1407); thanks to
+  [@Seyamalam](https://github.com/Seyamalam))
+- ✅ Tests: the check that a torrent added again keeps showing what it had no longer fails now
+  and then on a slow computer: it counted how often it had looked, which the computer's pace
+  decides; it now holds the re-add half-way, the torrent out of the session, until its numbers
+  were read there, which a fast computer hardly ever did
+  ([#2002](https://github.com/anefzaoui/misterdownloadmanager/issues/2002))
+- ✅ GOVERNANCE.md says how MDM is run (who decides, how changes are reviewed and released, AI-assisted
+  development, what happens if the maintainer can't continue), and CODE_OF_CONDUCT.md adopts the
+  Contributor Covenant 2.1
+- ✅ All of MDM's Trendshift placements, not just the first: #1 Rust repository of the day and
+  of the week, #3 repository of the week and #4 of the day among all languages; four badges in the
+  README, and on the website's proof of delivery and press page, with the site's own stamp
 
 ## Being worked on
 
@@ -2229,6 +2379,10 @@ These ship in a later version, when they're ready.
 
 ### Being built
 
+- 🔄 A site whose bot check refused a download rests, not just that file: no other download of
+  that site starts, and none is retried, for 2 minutes, then 5, 15 and 30 after each refusal in a
+  row; a queue no longer runs through a site's files as fast as they are refused
+  ([#2024](https://github.com/anefzaoui/misterdownloadmanager/issues/2024)): in review
 - 🔄 **The tray icon's downloads panel**: a click on the icon shows what is downloading, with the progress window's Pause/Resume (Stop and save for a recording) and Cancel for each download and a button for the main window; a double click opens the window; **Options → General → Show downloads when the notification area icon is clicked** (ticked in a new copy, unticked in one set up before it) ([#1365](https://github.com/anefzaoui/misterdownloadmanager/issues/1365)): draft, in review
 - 🔄 **Add torrent**: choose whether a multi-file torrent gets an outer folder, with shared-destination ownership and deletion safeguards ([discussion #965](https://github.com/anefzaoui/misterdownloadmanager/discussions/965), [PR #1121](https://github.com/anefzaoui/misterdownloadmanager/pull/1121)): in review
 - 🔄 **Add torrent**: a **Rename** row (main name and extension) to rename a single-file torrent or a multi-file torrent's folder before the download starts ([#517](https://github.com/anefzaoui/misterdownloadmanager/issues/517)): in review

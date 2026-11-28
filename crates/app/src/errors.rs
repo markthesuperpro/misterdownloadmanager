@@ -3,7 +3,7 @@
 //! event log. Every engine error is named here, so a new one can't reach the list untranslated.
 //! Data inside a message (status codes, paths, sizes) goes in as isolates (crate::i18n::fmt).
 
-use mdm_engine::{CertProblem, Error, NetKind, Refusal};
+use mdm_engine::{CertProblem, CertRefusal, Error, NetKind, Refusal};
 
 use crate::i18n::{fmt, ltr, t};
 
@@ -99,7 +99,7 @@ pub fn describe(e: &Error) -> String {
             // i18n: a download's error on a computer (a minimal Linux) without the certificates that secure connections check servers with; "ca-certificates" is the package's name, left as is
             t("this computer has no certificates to check the server with: install the ca-certificates package, then try again").to_owned()
         }
-        Error::Certificate(problem) => certificate(*problem).to_owned(),
+        Error::Certificate(refusal) => certificate(refusal),
         Error::Net { kind, cause } => {
             let what = match kind {
                 NetKind::Connect => t("cannot connect to the server"),
@@ -187,10 +187,32 @@ fn path_too_long(path: &std::path::Path) -> String {
     }
 }
 
-/// Why the server's certificate was refused (#762), in words a user can act on: a browser
-/// warns about the same, and MDM has no way around it.
-fn certificate(problem: CertProblem) -> &'static str {
-    match problem {
+/// Why the server's certificate was refused (#762, #1964), in words a user can act on.
+pub fn certificate(refusal: &CertRefusal) -> String {
+    if let Some(info) = &refusal.info {
+        match refusal.problem {
+            CertProblem::Expired => {
+                if let Some(date) = &info.expired_since {
+                    // i18n: why a download failed: the site's security certificate expired on {date} (YYYY-MM-DD)
+                    return crate::i18n::fmt(
+                        t(
+                            "the site's security certificate expired on {date}, so MDM can't be sure it's the real site (your browser warns about it too)",
+                        ),
+                        &[("date", date)],
+                    );
+                }
+            }
+            CertProblem::Untrusted if info.self_signed => {
+                // i18n: why a download failed: the site's security certificate is self-signed
+                return t(
+                    "the site's security certificate is self-signed, so MDM can't be sure it's the real site (your browser warns about it too)",
+                )
+                .to_owned();
+            }
+            _ => {}
+        }
+    }
+    match refusal.problem {
         // i18n: why a download failed: the site's security certificate (what proves a secure, HTTPS, site is the one it says) is past its end date. Browsers warn about the same site
         CertProblem::Expired => t(
             "the site's security certificate has expired, so MDM can't be sure it's the real site (your browser warns about it too)",
@@ -220,6 +242,7 @@ fn certificate(problem: CertProblem) -> &'static str {
             "the site's security certificate was refused, so MDM can't be sure it's the real site",
         ),
     }
+    .to_owned()
 }
 
 /// A site's refusal to give the file (Google Drive, #34), with what to do about it.
@@ -384,7 +407,7 @@ pub fn adapter(e: &mdm_engine::NetError) -> String {
 pub fn tools(e: &mdm_tools::Error) -> String {
     use mdm_tools::Error as E;
     // ffmpeg's list says it is the list that couldn't be fetched, then the server and why.
-    if !matches!(e, E::FfmpegList(_))
+    if !matches!(e, E::FfmpegList(_) | E::MesaList(_))
         && let Some((host, fault)) = e.network()
     {
         return reach(&host, fault, cause_of(e).as_deref());
@@ -426,6 +449,45 @@ pub fn tools(e: &mdm_tools::Error) -> String {
             &[("name", name)],
         ),
         E::FfmpegList(why) => ffmpeg_list(why),
+        E::MesaList(why) => mesa_list(why),
+    }
+}
+
+/// Why MDM's list of the software renderers it checked (Mesa's llvmpipe, #476) let none in, in
+/// the interface language.
+fn mesa_list(why: &mdm_tools::ffmpeg::ListError) -> String {
+    use mdm_tools::ffmpeg::ListError as L;
+    match why {
+        L::Unavailable(e) => fmt(
+            // i18n: error installing Mesa's software renderer (it draws MDM's windows where there is no graphics card): MDM installs only builds named in a list it publishes, signed with its key, and that list couldn't be downloaded; {error} = why
+            t("MDM's list of checked software renderers could not be downloaded: {error}"),
+            &[("error", &tools(e))],
+        ),
+        L::Unsigned => t(
+            // i18n: error installing Mesa's software renderer: the list of builds MDM accepts doesn't carry MDM's own signature
+            "MDM's list of checked software renderers isn't signed by MDM's key, so nothing was installed",
+        )
+        .to_owned(),
+        L::Older { .. } => t(
+            // i18n: error installing Mesa's software renderer: the list of builds MDM accepts is older than one this copy of MDM already used (it never goes back to an older list)
+            "MDM's list of checked software renderers is older than one already used, so nothing was installed",
+        )
+        .to_owned(),
+        L::Unreadable(detail) => fmt(
+            // i18n: error installing Mesa's software renderer: the list of builds MDM accepts couldn't be read; {detail} = the technical detail, in English
+            t("MDM's list of checked software renderers can't be read ({detail})"),
+            &[("detail", detail)],
+        ),
+        L::NoBuild(_) => t(
+            // i18n: error installing Mesa's software renderer: the list of builds MDM accepts has none for this computer's system and processor
+            "MDM's list of checked software renderers has none for this computer",
+        )
+        .to_owned(),
+        L::NotListed => t(
+            // i18n: error installing Mesa's software renderer: a file downloaded isn't the one named in the list of builds MDM accepts (its checksum differs), so it was thrown away
+            "the downloaded software renderer isn't the build MDM's list of checked builds names, so it wasn't installed",
+        )
+        .to_owned(),
     }
 }
 
@@ -572,8 +634,9 @@ pub fn tools_advice(e: &mdm_tools::Error, name: &str) -> Option<String> {
     let fault = match e {
         mdm_tools::Error::BadChecksum => F::CutShort,
         // ffmpeg's list: what the failure to fetch it calls for, else another try later.
-        mdm_tools::Error::FfmpegList(ListError::Unavailable(e)) => return tools_advice(e, name),
-        mdm_tools::Error::FfmpegList(_) => F::CutShort,
+        mdm_tools::Error::FfmpegList(ListError::Unavailable(e))
+        | mdm_tools::Error::MesaList(ListError::Unavailable(e)) => return tools_advice(e, name),
+        mdm_tools::Error::FfmpegList(_) | mdm_tools::Error::MesaList(_) => F::CutShort,
         _ => e.network()?.1,
     };
     let text = match fault {
@@ -707,7 +770,7 @@ mod tests {
         ];
         let said: Vec<String> = all
             .iter()
-            .map(|p| describe(&Error::Certificate(*p)))
+            .map(|p| describe(&Error::Certificate((*p).into())))
             .collect();
         for (p, s) in all.iter().zip(&said) {
             assert!(s.contains("certificate"), "{p:?}: {s}");
@@ -718,6 +781,32 @@ mod tests {
         assert!(said[5].contains("isn't made for websites"));
         let distinct: std::collections::HashSet<_> = said.iter().collect();
         assert_eq!(distinct.len(), all.len());
+
+        let expired = describe(&Error::Certificate(CertRefusal {
+            problem: P::Expired,
+            info: Some(Box::new(mdm_engine::CertInfo {
+                host: "nas.local".into(),
+                port: 8443,
+                sha256: "ab".repeat(32),
+                problem: P::Expired,
+                expired_since: Some("2021-05-25".into()),
+                self_signed: false,
+            })),
+        }));
+        assert!(expired.contains("2021-05-25"));
+
+        let self_signed = describe(&Error::Certificate(CertRefusal {
+            problem: P::Untrusted,
+            info: Some(Box::new(mdm_engine::CertInfo {
+                host: "nas.local".into(),
+                port: 8443,
+                sha256: "cd".repeat(32),
+                problem: P::Untrusted,
+                expired_since: None,
+                self_signed: true,
+            })),
+        }));
+        assert!(self_signed.contains("self-signed"));
     }
 
     /// #816: a helper that couldn't be downloaded names the server and why, and says what to do.

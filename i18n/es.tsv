@@ -191,6 +191,11 @@
 #. {n} = a number (keep the braces as they are)
 #, machine
 @plural	{package}: {n} file left out, its name would lead out of its folder|{package}: {n} files left out, their names would lead out of its folder	{package}: se ha omitido {n} archivo porque su nombre lo sacaría de la carpeta|{package}: se han omitido {n} archivos porque sus nombres los sacarían de la carpeta
+#. count in the Link grabber window
+#. Link grabber's Source line: a Google Drive folder's ({package}: its name) items that aren't files to download (Google Forms, shortcuts, Google Sites) are left out; {n} how many
+#. {n} = a number (keep the braces as they are)
+#, machine
+@plural	{package}: {n} item left out, a Google Form, shortcut or Site isn't a file|{package}: {n} items left out, Google Forms, shortcuts and Sites aren't files	{package}: se ha omitido {n} elemento, un formulario, acceso directo o sitio de Google no es un archivo|{package}: se han omitido {n} elementos, los formularios, accesos directos y sitios de Google no son archivos
 #. count in cnl.rs
 #. Click'n'Load window: {site} is a web site's name such as "example.com"
 #. {site} = a web site's name such as "example.com"; {n} = a number (keep the braces as they are)
@@ -356,6 +361,10 @@
 #. RSS feeds window, Download rules: shown when there are no rules yet
 #, machine
 	A rule adds the new articles whose titles it matches, as they come.	Una regla añade los nuevos artículos cuyos títulos coinciden, a medida que llegan.
+#. text in the Options window
+#. Site rules window: in the empty list of rules, under its title
+#, machine
+	A rule sets the connections, User-Agent, headers or proxy for one site.	Una regla establece las conexiones, el User-Agent, los encabezados o el proxy para un sitio.
 #. text in errors.rs
 #. an error: a server on this computer redirected the download to the internet, which would not go through the chosen network adapter; {adapter} its name
 #, machine
@@ -388,6 +397,10 @@
 #. why a split archive (in several files, its volumes) isn't tested yet, in "{name} isn't complete ({why})": one of its files isn't downloaded yet
 #, machine
 	a volume of it isn't there yet	falta uno de sus volúmenes
+#. text in the Download video window
+#. why the thumbnail-as-cover checkbox is greyed in Download video: the choice is the site's sound in a WebM file, which can't hold a picture
+#, machine
+	A WebM file can't hold a cover: choose M4A, MP3, Opus or FLAC	Un archivo WebM no puede contener una portada: elige M4A, MP3, Opus o FLAC
 #. window title in the Help menu's windows (About, updates, shortcuts, Tell a friend)
 #, machine
 	About Mister Download Manager	Acerca de Mister Download Manager
@@ -463,6 +476,10 @@
 #. link in the empty download list: opens Add URL
 #, machine
 	Add new download	Añadir nueva descarga
+#. text in the Options window
+#. Options → Accounts: in the empty list of accounts, under its title
+#, machine
+	Add one to download file-host links through it.	Añade una para descargar vínculos de servidores de archivos a través de ella.
 #. text in the Options window
 #, machine
 	Add the duplicate and overwrite the existing file	Añadir el duplicado y sobrescribir el archivo existente
@@ -617,6 +634,10 @@
 #. Click'n'Load window, under the question: nothing happens to the links before the user adds them in Link grabber
 #, machine
 	Allow only sites you use. Nothing is looked up or downloaded before you add it in Link grabber.	Permite solo los sitios que uses. No se consulta ni se descarga nada hasta que lo añadas en el Capturador de enlaces.
+#. text in the Options window; window title in the Options window
+#. window title: HTTPS sites whose certificate the user chose to trust
+#, machine
+	Allowed certificates	Certificados permitidos
 #. text in errors.rs
 #, machine
 	already being downloaded: {path}	ya se está descargando: {path}
@@ -650,6 +671,9 @@
 #. View menu: a check item; dark mode on, whatever the system's setting
 #, machine
 	Always dark	Siempre oscuro
+#. button in a dialog box
+#, machine
+	Always for this site	Siempre para este sitio
 #. text in the Options window
 #. Options → Archives: where extracted files go
 #, machine
@@ -665,6 +689,10 @@
 #. a country's name (where a download's server is)
 #, machine
 	American Samoa	Samoa Americana
+#. text in extension.rs
+#. a check of Test browser integration (Windows), one short line: an older registry entry for MDM's helper is in the way of the right one; the entry and where it leads show on the line under it
+#, machine
+	An older registry entry is in the way:	Una entrada del registro anterior está interfiriendo:
 #. text in countries.rs
 #. a country's name (where a download's server is)
 #, machine
@@ -1059,6 +1087,11 @@
 #, machine
 	Central African Republic	República Centroafricana
 #. text in the Options window
+#. column title: SHA-256 certificate fingerprint
+#, machine
+	Certificate (SHA-256)	Certificado (SHA-256)
+#. text in a dialog box; text in the Options window
+#. Certificate warning: the certificate's SHA-256 fingerprint
 #. Options → Remote → Status: the certificate's fingerprint, which the phone's browser shows when it warns about it; {fingerprint} = hex digits
 #, machine
 	Certificate (SHA-256): {fingerprint}	Certificado (SHA-256): {fingerprint}
@@ -1066,6 +1099,11 @@
 #. Options → DNS over TLS: label before the name the server's certificate shows
 #, machine
 	Certificate name:	Nombre del certificado:
+#. text in the Options window
+#. Options → Sites Logins: button: opens the list of allowed HTTPS site certificates
+#. the trailing ... means it is still going on: keep it
+#, machine
+	Certificates...	Certificados...
 #. text in countries.rs
 #. a country's name (where a download's server is)
 #, machine
@@ -1118,6 +1156,11 @@
 #. event log entry after Recheck: {have} and {total} are sizes ("1.2 GB of 4 GB there")
 #, machine
 	Checked: {have} of {total} there	Comprobado: {have} de {total} ahí
+#. text in softgl.rs
+#. the software renderer's window: the download is done, and its files are being checked and unpacked
+#. the trailing ... means it is still going on: keep it
+#, machine
+	Checking and unpacking Mesa's software renderer...	Comprobando y descomprimiendo el renderizador de software de Mesa...
 #. message or event log entry in the main window
 #. event log entry: a torrent's files are being read and checked again (Recheck)
 #, machine
@@ -1152,6 +1195,10 @@
 #. the trailing ... means it is still going on: keep it
 #, machine
 	Checking...	Comprobando...
+#. text in the download list (sizes, speeds, status)
+#. a download's status: it finished, but the checksum its server announced didn't match its file (the file is kept). Short: the list's Status column is narrow
+#, machine
+	Checksum warning	Advertencia de suma de comprobación
 #. text in countries.rs
 #. a country's name (where a download's server is)
 #, machine
@@ -1164,6 +1211,10 @@
 #. remote control page (on a phone): what the ".torrent file" button does (screen readers)
 #, machine
 	Choose a .torrent file	Elegir un archivo .torrent
+#. text in rssdlg.rs
+#. RSS feeds window: in the empty list of articles, under its title
+#, machine
+	Choose a feed to see its articles.	Elige una fuente para ver sus artículos.
 #. message or event log entry in the main window
 #. title of the file dialog of View → Font → Choose a font file
 #. title of the message when the font picked in View → Font can't be used
@@ -1316,6 +1367,10 @@
 #. window title: a download's own request settings (User-Agent, headers, connections, proxy), from File Properties → Connection...
 #, machine
 	Connection settings	Configuración de conexión
+#. text in the Options window
+#. Options → Connection: beside the Site rules... button: what it sets (a User-Agent, request headers, a number of connections, a proxy, each for the sites a rule names)
+#, machine
+	Connection settings by site	Configuración de conexión por sitio
 #. message or event log entry in the main window
 #. event log: File Properties → Connection settings changed the download's own User-Agent, headers, proxy or connections
 #, machine
@@ -1335,6 +1390,13 @@
 #. text in the Options window
 #, machine
 	Connections:	Conexiones:
+#. text in a dialog box
+#. Certificate warning: question before Continue once / Always for this site / Cancel
+#, machine
+	Continue anyway?	¿Continuar de todos modos?
+#. button in a dialog box
+#, machine
+	Continue once	Continuar una vez
 #. link (opens a web page) in the Help menu's windows (About, updates, shortcuts, Tell a friend)
 #, machine
 	Contributors	Colaboradores
@@ -1598,6 +1660,9 @@
 #. button in the browser extension's window: stop offering it at each start
 #, machine
 	Don't ask again	No volver a preguntar
+#. option (radio button) in the Options window
+#, machine
+	Don't show	No mostrar
 #. text in the Options window
 #. checkbox, Options → Downloads: Download complete and MDM's other windows that open by themselves wait while a full-screen game, app or video, a presentation or the locked screen is on, and show when the user is back
 #, machine
@@ -1732,6 +1797,11 @@
 #. {size} = a file size such as "4.2 MB"; {bytes} = a number of bytes (keep the braces as they are)
 #, machine
 	Downloaded {size} ({bytes} Bytes)	{size} ({bytes} Bytes) descargados
+#. text in the download list (sizes, speeds, status)
+#. a download's status, whole (the Status cell's tip, Properties, the log, Download complete): it finished, but the checksum its server announced didn't match the file, which is kept. "Check it": the user can verify the file against a checksum they trust (right-click → Verify checksum...)
+#. {algorithm} = a checksum algorithm such as "SHA-256" (keep the braces as they are)
+#, machine
+	Downloaded, but the server's {algorithm} checksum didn't match; the file may still be fine. Check it if it matters	Descargado, pero la suma de comprobación {algorithm} del servidor no coincide; el archivo podría estar bien. Compruébalo si es importante
 #. item in the Categories tree in the download list; value in a column's filter list in the download list; text in remote.rs
 #. a download's status (state it is in, not a command)
 #, machine
@@ -1764,6 +1834,11 @@
 #. Helpers: MDM's own copy of a helper is being downloaded (where there was none, or in place of the system's); {percent} = how far, a number
 #, machine
 	Downloading MDM's own copy... {percent}%	Descargando la copia propia de MDM... {percent}%
+#. text in softgl.rs
+#. the software renderer's window, while it downloads; {done} and {size} = sizes (12.0 MB of 66.3 MB)
+#. {size} = a file size such as "4.2 MB" (keep the braces as they are)
+#, machine
+	Downloading Mesa's software renderer: {done} of {size}	Descargando el renderizador de software de Mesa: {done} de {size}
 #. text in archtest.rs
 #. in a download's log: after its archive test found damaged files, only their bytes are downloaded again from the same server; {size} like "1.20 MB"
 #. {size} = a file size such as "4.2 MB" (keep the braces as they are)
@@ -1781,6 +1856,10 @@
 #. tab title: download settings
 #, machine
 	Downloads	Descargas
+#. text in the Scheduler window
+#. Scheduler → Files in the queue: in the empty list, under its title
+#, machine
+	Downloads added to this queue show here.	Las descargas añadidas a esta cola se muestran aquí.
 #. window title in a dialog box
 #. title of the window that sums up downloads added together (a playlist, a batch) once all are done
 #, machine
@@ -1851,6 +1930,10 @@
 #. Link grabber, in the empty "Save to" box: each file goes to its category's folder (Options → Save to)
 #, machine
 	Each file's category folder	Carpeta de categoría de cada archivo
+#. text in the Options window
+#. Options → Regional → Videos' sound: the first choice, each video's own sound (the language it was made in), the default
+#, machine
+	Each video's original	Original de cada vídeo
 #. text in countries.rs
 #. a country's name (where a download's server is)
 #, machine
@@ -1938,7 +2021,6 @@
 #, machine
 	Eritrea	Eritrea
 #. text in a dialog box; item in the Categories tree in the download list; value in a column's filter list in the download list; text in the download list (sizes, speeds, status); text in a download's progress window; text in remote.rs
-#. in Download File Info, where the size goes: the address didn't answer
 #. a download's status (state it is in, not a command)
 #. a download's status (state it is in, not a command): it failed
 #, machine
@@ -2008,6 +2090,10 @@
 #. Options → Accounts: a note that the debrid services' support (Real-Debrid, AllDebrid, Premiumize) is new and not yet tried with real paid accounts
 #, machine
 	Experimental: built from the services' public API documentation, not yet confirmed with real accounts.	Experimental: creado a partir de la documentación de la API pública de los servicios; aún no se ha probado con cuentas reales.
+#. text in the Options window
+#. Allowed certificates table: short reason label
+#, machine
+	Expired	Caducado
 #. message or event log entry in the main window; text in the Options window
 #, machine
 	Export	Exportar
@@ -2258,6 +2344,10 @@
 #. {address} = an example web address with a * in the file name
 #, machine
 	For example:  {address}	Por ejemplo: {address}
+#. text in the Options window
+#. Options → Regional → Videos' sound: a note under the language list
+#, machine
+	For videos whose sound comes in several languages (dubbed ones), and playlists. A video without it keeps its original sound.	Para vídeos cuyo sonido está en varios idiomas (doblados) y listas de reproducción. Un vídeo sin esta opción mantiene su sonido original.
 #. text in the Add torrent window
 #. Torrent settings, under the switch that makes MDM open magnet links and .torrent files (macOS, Linux)
 #, machine
@@ -2608,10 +2698,6 @@
 #. Options → DNS settings: checkbox: when the chosen DNS can't be reached, use the system's instead
 #, machine
 	If it can't be reached, use the system's DNS	Si no se puede contactar, usar el DNS del sistema
-#. text in extension.rs
-#. under "macOS keeps Mister Download Manager out of …'s folder" (Test browser integration, the browser extension's window): how to allow it. The quoted words and System Settings → Privacy & Security → Full Disk Access are macOS's own: use Apple's words in this language, or keep the English ones when unsure
-#, machine
-	If macOS asks whether it may access data from other apps, allow it. Or turn on Mister Download Manager in System Settings → Privacy & Security → Full Disk Access. Then press Set it up.	Si macOS pregunta si puede acceder a datos de otras aplicaciones, permítelo. O activa Mister Download Manager en Ajustes del Sistema → Privacidad y seguridad → Acceso total al disco. Después, pulsa &Configurar.
 #. text in errors.rs
 #. what to do when a helper's server couldn't be reached; {proxy} = the Options tab Proxy / Socks; {name} = yt-dlp, ffmpeg or gallery-dl; {helpers} and {other} = the buttons Helpers and Use another program
 #. {name} = a file name (keep the braces as they are)
@@ -2784,6 +2870,10 @@
 #. a country's name (where a download's server is)
 #, machine
 	Italy	Italia
+#. text in rssdlg.rs
+#. RSS feeds window: in the empty list of articles of a feed not read yet
+#, machine
+	Its articles show here once the feed is read.	Sus artículos se muestran aquí una vez que se lee la fuente.
 #. text in extracting archives (a download's log, the Archive password window)
 #. why an archive wasn't extracted in place (after "Couldn't extract {name}: "); HatchZip took its files out (the archive is gone), but moving them stopped: {to} holds those moved, {left} the others, {error} the system's reason
 #. {error} = an error message (keep the braces as they are)
@@ -3108,6 +3198,11 @@
 #. the trailing ... means it is still going on: keep it
 #, machine
 	Looking the page up...	Buscando la página...
+#. text in softgl.rs
+#. the software renderer's window: while MDM reads its signed list of the software renderers it may download (Mesa's llvmpipe: it draws MDM's windows where there is no graphics card)
+#. the trailing ... means it is still going on: keep it
+#, machine
+	Looking up Mesa's software renderer...	Buscando el renderizador de software de Mesa...
 #. text in preview.rs
 #. the preview pane: still looking whether the file is there
 #. the trailing ... means it is still going on: keep it
@@ -3276,6 +3371,9 @@
 #. Video helpers: MDM can't download Node.js on this system (an unusual processor); Node.js and Deno are program names; "Use another program" is the button below
 #, machine
 	MDM has no copy for this system: install Node.js or Deno, or use another program	MDM no tiene una copia para este sistema: instala Node.js o Deno, o usa otro programa
+#. text in softgl.rs
+#, machine
+	MDM has no data folder	MDM no tiene carpeta de datos
 #. text in remote.rs
 #. remote control page (on a phone): no pairing code is shown in MDM; "Pair a device" is MDM's button
 #, machine
@@ -3301,6 +3399,27 @@
 #. error installing ffmpeg: the list of builds MDM accepts doesn't carry MDM's own signature
 #, machine
 	MDM's list of checked ffmpeg builds isn't signed by MDM's key, so ffmpeg wasn't installed	La lista de compilaciones de ffmpeg comprobadas de MDM no está firmada con la clave de MDM, por lo que no se instaló ffmpeg
+#. text in errors.rs
+#. error installing Mesa's software renderer: the list of builds MDM accepts couldn't be read; {detail} = the technical detail, in English
+#, machine
+	MDM's list of checked software renderers can't be read ({detail})	No se puede leer la lista de renderizadores de software comprobados de MDM ({detail})
+#. text in errors.rs
+#. error installing Mesa's software renderer (it draws MDM's windows where there is no graphics card): MDM installs only builds named in a list it publishes, signed with its key, and that list couldn't be downloaded; {error} = why
+#. {error} = an error message (keep the braces as they are)
+#, machine
+	MDM's list of checked software renderers could not be downloaded: {error}	No se pudo descargar la lista de renderizadores de software comprobados de MDM: {error}
+#. text in errors.rs
+#. error installing Mesa's software renderer: the list of builds MDM accepts has none for this computer's system and processor
+#, machine
+	MDM's list of checked software renderers has none for this computer	La lista de renderizadores de software comprobados de MDM no tiene ninguno para este equipo
+#. text in errors.rs
+#. error installing Mesa's software renderer: the list of builds MDM accepts is older than one this copy of MDM already used (it never goes back to an older list)
+#, machine
+	MDM's list of checked software renderers is older than one already used, so nothing was installed	La lista de renderizadores de software comprobados de MDM es más antigua que una ya usada, así que no se instaló nada
+#. text in errors.rs
+#. error installing Mesa's software renderer: the list of builds MDM accepts doesn't carry MDM's own signature
+#, machine
+	MDM's list of checked software renderers isn't signed by MDM's key, so nothing was installed	La lista de renderizadores de software comprobados de MDM no está firmada con la clave de MDM, así que no se instaló nada
 #. text in whereis.rs
 #. how far a download's server is, by its round trip (60 to 150 ms)
 #, machine
@@ -3318,6 +3437,14 @@
 #. a video's status while its picture and sound are joined into one file (ffmpeg); {percent} how far, e.g. "45%"
 #, machine
 	Merging... ({percent})	Combinando... ({percent})
+#. text in softgl.rs
+#. the software renderer's window: the download or its check failed; {reason} = why, a sentence's part
+#, machine
+	Mesa's software renderer couldn't be installed: {reason}	No se pudo instalar el renderizador de software de Mesa: {reason}
+#. text in softgl.rs
+#. the software renderer's window, once Mesa's llvmpipe is downloaded and checked
+#, machine
+	Mesa's software renderer is installed. MDM draws with it from its next start.	El renderizador de software de Mesa está instalado. MDM lo usará a partir de su próximo inicio.
 #. text in countries.rs
 #. a country's name (where a download's server is)
 #, machine
@@ -3334,6 +3461,9 @@
 #. checkbox: the Minimize button hides MDM's windows to the notification area (system tray) instead of the taskbar
 #, machine
 	Minimize to the notification area	Minimizar en el área de notificación
+#. text in the Options window
+#, machine
+	Minimized, the window waits on the taskbar and doesn't take the focus.	Minimizada, la ventana espera en la barra de tareas y no toma el foco.
 #. text in rssdlg.rs; text in the Add torrent window
 #. RSS feeds window: the unit after the minutes box
 #. Torrent settings: the unit after the minutes box
@@ -3574,6 +3704,10 @@
 #. Link grabber, a link's status: the server wants a login (401, 403)
 #, machine
 	Needs a login	Necesita un inicio de sesión
+#. text in the Link grabber window
+#. Link grabber, a link's status: a Google Drive folder that isn't shared with everyone needs the browser's Google sign-in. The sentence is the cell's hover tip
+#, machine
+	Needs a sign-in	Requiere iniciar sesión
 #. text in countries.rs
 #. a country's name (where a download's server is)
 #, machine
@@ -3654,6 +3788,10 @@
 #. button in a dialog box; text in a download's progress window
 #, machine
 	No	No
+#. text in the Options window
+#. Options → Accounts: the title in the empty list of debrid service accounts
+#, machine
+	No accounts yet	Aún no hay cuentas
 #. text in a dialog box
 #, machine
 	No addresses yet	Aún no hay direcciones
@@ -3661,6 +3799,10 @@
 #. Options → Proxy / Socks: Test got no answer in time
 #, machine
 	No answer within 20 seconds.	No hubo respuesta en 20 segundos.
+#. text in rssdlg.rs
+#. RSS feeds window: the title in the empty list of articles of a feed that has none
+#, machine
+	No articles	No hay artículos
 #. text in extension.rs
 #. a check of Test browser integration (Linux, macOS): MDM found no browser it can connect to (one installed as a Flatpak isn't found)
 #, machine
@@ -3708,12 +3850,29 @@
 #. title in the empty download list when there are no downloads at all
 #, machine
 	No downloads yet	Aún no hay descargas
+#. text in rssdlg.rs
+#. RSS feeds window: the title in the empty list of articles, no feed chosen
+#, machine
+	No feed chosen	No se ha elegido ninguna fuente
+#. text in rssdlg.rs
+#. RSS feeds window: the title in the empty list of feeds
+#, machine
+	No feeds yet	Aún no hay fuentes
+#. text in the Scheduler window
+#. Scheduler → Files in the queue: the title in the empty list
+#, machine
+	No files in this queue	No hay archivos en esta cola
 #. text in a dialog box
 #, machine
 	No folders yet	Aún no hay carpetas
 #. text in a dialog box
 #, machine
 	No goes back, to choose another folder.	No para volver atrás y elegir otra carpeta.
+#. text in softgl.rs
+#. the software renderer's window, offered once at a start where Windows' own software renderer (WARP, keep the name) draws MDM because no graphics card has a driver for it; llvmpipe (keep the name) is Mesa's software renderer; {size} = its download's size (e.g. 66.3 MB)
+#. {size} = a file size such as "4.2 MB" (keep the braces as they are)
+#, machine
+	No graphics card here has a driver MDM can draw with, so Windows' software renderer (WARP) draws its windows and keeps the processor busy. Mesa's software renderer (llvmpipe) draws them with far less. Download it once ({size}, from Mesa's builds on GitHub)? MDM draws with it from its next start.	Ninguna tarjeta gráfica tiene un controlador que MDM pueda usar, así que el renderizador de software de Windows (WARP) dibuja sus ventanas y mantiene el procesador ocupado. El renderizador de software de Mesa (llvmpipe) las dibuja con mucho menos uso del procesador. ¿Descargarlo una vez ({size}, de las compilaciones de Mesa en GitHub)? MDM lo usará a partir de su próximo inicio.
 #. tooltip (why a control is greyed) in langpick.rs
 #. tooltip of the greyed OK button in the language picker
 #, machine
@@ -3721,6 +3880,10 @@
 #. text in langpick.rs
 #, machine
 	No language matches.	Ningún idioma coincide.
+#. text in the Link grabber window
+#. Link grabber: the title in its empty list
+#, machine
+	No links yet	Aún no hay vínculos
 #. text in the Options window
 #. Options → Remote → Status: on, but the computer has no local network address now
 #, machine
@@ -3752,9 +3915,17 @@
 #, machine
 	No proxy/socks	Sin proxy/socks
 #. text in the Options window
+#. Site rules window: the title in the empty list of rules
+#, machine
+	No site rules yet	Aún no hay reglas de sitio
+#. text in the Options window
 #. Options → Accounts: no system keyring/keychain answered (none runs, e.g. a desktop without one), so the sign-ins stay in MDM's settings folder, which only the user's account may read
 #, machine
 	No system keyring answered, so sign-ins and passwords are kept in MDM's settings, which only you can read.	Ningún llavero del sistema ha respondido, por lo que los inicios de sesión y las contraseñas se guardan en la configuración de MDM, que solo tú puedes leer.
+#. text in the Add torrent window
+#. Add torrent: the title in the empty list of files, before a torrent is read
+#, machine
+	No torrent yet	Aún no hay torrent
 #. message or event log entry in the main window
 #. event log entry: Add trackers changed nothing, the torrent had them all
 #, machine
@@ -3873,8 +4044,16 @@
 #, machine
 	Not tested: it is larger than {limit} (Options → Archives). Right-click → Test archive tests it	No probado: es mayor que {limit} (Opciones → Archivos). Clic derecho → Probar archivo para probarlo
 #. text in the Options window
+#. Allowed certificates table: short reason label
+#, machine
+	Not trusted	No es de confianza
+#. text in the Options window
 #, machine
 	Not used: file parts are written next to the file	No se usa: las partes del archivo se escriben junto al archivo
+#. text in the Options window
+#. Allowed certificates table: short reason label
+#, machine
+	Not yet valid	Aún no es válido
 #. text in a dialog box
 #. \\n starts a new line: break lines where they fit the translation
 #, machine
@@ -3996,6 +4175,10 @@
 #. the Scheduler, under "Wake the computer to run this queue" (Linux): the computer's wake alarm can be set by an administrator only
 #, machine
 	Only an administrator can allow this	Solo un administrador puede permitir esto
+#. text in the Download video window
+#. why the thumbnail-as-cover checkbox is greyed in Download video: the choice is a video, which is saved as it is
+#, machine
+	Only an audio file gets a cover: a video is saved as it is	Solo un archivo de audio tiene portada: un vídeo se guarda tal cual
 #. tooltip (why a control is greyed) in the Download video window
 #. why "Put them into the video" is greyed: the chosen file type can't hold subtitles
 #, machine
@@ -4096,6 +4279,9 @@
 #. Options → Add an account: label before the field for the service's API token (the other way to sign in)
 #, machine
 	Or paste your API token:	O pega tu token de API:
+#. text in the Options window
+#, machine
+	Other	Otro
 #. text in the Link grabber window
 #. Link grabber: the box that edits the selected package
 #, machine
@@ -4163,12 +4349,14 @@
 #. text in the Batch download window; text in a dialog box; label in the Options window; text in the Options window; text in a download's Properties window
 #, machine
 	Password	Contraseña
-#. text in the Link grabber window; text in the Options window
+#. text in the Link grabber window; text in the Options window; text in requestedit.rs
 #. Link grabber: the package's archives' password (a label before its box)
 #. Options → Add an account: label before the field for the password at the debrid service
+#. Site rule: label before the proxy's password, beside its user name
 #, machine
 	Password:	Contraseña:
 #. text in the Add torrent window
+#. "Look up" is the button that reads the torrent: use its translation
 #, machine
 	Paste a magnet link or choose a .torrent file, then Look up.	Pegue un enlace magnet o elija un archivo .torrent, y luego pulse Buscar.
 #. text in the Link grabber window
@@ -4306,6 +4494,10 @@
 #. text in a download's progress window
 #, machine
 	Property	Propiedad
+#. text in the Options window
+#. Site rules: column title: the rule's proxy (empty: the one in Options → Proxy / Socks; "No proxy"; or its address)
+#, machine
+	Proxy	Proxy
 #. text in errors.rs; text in the Options window
 #. tab title
 #, machine
@@ -4321,6 +4513,10 @@
 #, machine
 	Proxy server address	Dirección del servidor proxy
 #. text in requestedit.rs
+#. Site rule: label before the proxy's user name (its login), under the proxy's address
+#, machine
+	Proxy user:	Usuario del proxy:
+#. text in requestedit.rs
 #. Site rule / a download's Connection settings: label before the proxy choice
 #, machine
 	Proxy:	Proxy:
@@ -4332,6 +4528,10 @@
 #. why Batch download's OK is greyed
 #, machine
 	Put a * in the address where the numbers or letters go	Pon un * en la dirección donde van los números o las letras
+#. text in the Download video window
+#. checkbox in Download video: the picture the site shows for the video (its thumbnail) goes into an audio-only download (MP3, M4A, Opus, FLAC) as its cover, which music players show
+#, machine
+	Put the video's thumbnail in the audio file as its cover	Poner la miniatura del vídeo en el archivo de audio como portada
 #. checkbox in the Download video window
 #. checkbox in Download video: subtitles go inside the video file instead of a separate .srt file beside it
 #, machine
@@ -4402,6 +4602,10 @@
 #. {error} = an error message (keep the braces as they are)
 #, machine
 	Reannounce failed: {error}	Error al volver a anunciar: {error}
+#. text in the Options window
+#. column title: certificate refusal reason allowed
+#, machine
+	Reason	Motivo
 #. text in a download's progress window
 #. column title: how much came from the peer
 #, machine
@@ -4673,6 +4877,10 @@
 #. text in the Batch download window
 #, machine
 	Second file:	Segundo archivo:
+#. text in a dialog box
+#. window title when a server's HTTPS certificate is refused
+#, machine
+	Security Alert	Alerta de seguridad
 #. text in preview.rs
 #. the preview pane when no download is selected, under its title
 #, machine
@@ -4854,7 +5062,7 @@
 #. checkbox in the Options window; checkbox in a download's progress window
 #, machine
 	Show download complete dialog	Mostrar cuadro de diálogo de descarga completa
-#. checkbox in the Options window
+#. text in the Options window
 #, machine
 	Show download progress dialog when a download starts	Mostrar el cuadro de diálogo de progreso de descarga cuando se inicia una descarga
 #. text in the Options window
@@ -4869,6 +5077,12 @@
 #. button in the browser extension's window: open the tutorial that adds the extension
 #, machine
 	Show me how	Mostrarme cómo
+#. option (radio button) in the Options window
+#, machine
+	Show minimized	Mostrar minimizada
+#. option (radio button) in the Options window
+#, machine
+	Show normally	Mostrar normalmente
 #. what a keyboard shortcut does in the Help menu's windows (About, updates, shortcuts, Tell a friend)
 #, machine
 	Show or hide the preview pane	Mostrar u ocultar el panel de vista previa
@@ -4961,6 +5175,7 @@
 	Sint Maarten	Sint Maarten
 #. text in the Options window
 #. Site rules: column title: the site pattern
+#. column title: site name and port
 #, machine
 	Site	Sitio
 #. checkbox in the Find window
@@ -4987,6 +5202,11 @@
 #. Site rule: label before the site pattern box (example.com, *.example.com)
 #, machine
 	Site:	Sitio:
+#. text in a dialog box
+#. Certificate warning: the site whose certificate was refused; {site} = host or host:port
+#. {site} = a web site's name such as "example.com" (keep the braces as they are)
+#, machine
+	Site: {site}	Sitio: {site}
 #. text in the Options window
 #. tab title: user names and passwords for sites
 #, machine
@@ -4997,6 +5217,14 @@
 #. text in helpers.rs
 #, machine
 	Sites send their best quality as separate video and audio. ffmpeg puts them together into one file that plays anywhere.	Los sitios envían la mejor calidad como vídeo y audio por separado. ffmpeg los une en un solo archivo que se reproduce en cualquier lugar.
+#. text in the Options window
+#. Options → Sites Logins: beside the Certificates... button
+#, machine
+	Sites whose certificate you chose to trust	Sitios cuyos certificados has elegido marcar como de confianza
+#. text in the Options window
+#. Allowed certificates window: explanation
+#, machine
+	Sites whose security certificate you chose to trust. Each entry is pinned to that certificate's SHA-256 fingerprint.	Sitios cuyos certificados de seguridad has elegido marcar como de confianza. Cada entrada está anclada a la huella digital SHA-256 de ese certificado.
 #. text in the Link grabber window; text in a download's progress window; text in the Scheduler window; text in the Add torrent window
 #. column title: the file's size
 #. column title: file size
@@ -5030,6 +5258,10 @@
 #. button in the Download complete window: opens a menu of how long no Download complete window shows (30 minutes, 1 hour...)
 #, machine
 	Snooze	Posponer
+#. text in softgl.rs
+#. the window's title: Mesa's software renderer, offered where no graphics card draws MDM's windows
+#, machine
+	Software renderer	Renderizador de software
 #. text in countries.rs
 #. a country's name (where a download's server is)
 #, machine
@@ -5049,9 +5281,17 @@
 #. text in a dialog box
 #, machine
 	Some of the torrent's files are already in this folder:	Algunos de los archivos del torrent ya están en esta carpeta:
+#. text in the Download video window
+#. label in Download video before the list of the languages a video's sound comes in (its original and the dubbed ones)
+#, machine
+	Sound	Sonido
 #. text in the Options window
 #, machine
 	Sound file	Archivo de sonido
+#. text in the Options window
+#. Options → Regional → Videos' sound: label before the list of languages
+#, machine
+	Sound language:	Idioma del sonido:
 #. page title in the Options window
 #, machine
 	Sound settings	Configuración de sonido
@@ -5469,6 +5709,10 @@
 #. a check of Test browser integration: the browsers find MDM's helper program
 #, machine
 	The browsers can find Mister Download Manager	Los navegadores pueden encontrar Mister Download Manager
+#. text in extension.rs
+#. under "An older registry entry is in the way" (Test browser integration, Windows): the entry is in the part of the registry 32-bit programs use, which the browsers read before the right entry; it leads to another copy of MDM or to one that was deleted; then what the Set it up button does about it
+#, machine
+	The browsers read it before the right one, and it leads to another copy of Mister Download Manager or to one that is gone. Set it up gives your account an entry of its own, which the browsers read first.	Los navegadores la leen antes que la correcta, y lleva a otra copia de Mister Download Manager o a una que ya no existe. Configurar crea una entrada propia para tu cuenta, que los navegadores leen primero.
 #. text in the Options window
 #. Options → Remote → Status: the settings were changed; they apply on OK
 #, machine
@@ -5577,6 +5821,10 @@
 #. text in errors.rs
 #, machine
 	the downloaded program doesn't match its signed checksum	el programa descargado no coincide con su suma de comprobación firmada
+#. text in errors.rs
+#. error installing Mesa's software renderer: a file downloaded isn't the one named in the list of builds MDM accepts (its checksum differs), so it was thrown away
+#, machine
+	the downloaded software renderer isn't the build MDM's list of checked builds names, so it wasn't installed	El renderizador de software descargado no es la compilación que figura en la lista de compilaciones comprobadas de MDM, así que no se instaló
 #. message or event log entry in the main window
 #. in the empty download list, under its title
 #, machine
@@ -5697,6 +5945,10 @@
 #. why a download failed (#1102): the folder and file name together are longer than Windows allows ({limit} characters, 259), counting the temporary files saved beside the file while it downloads (their names are longer). {path} = the path
 #, machine
 	the path is too long for Windows: at most {limit} characters with the files saved while it downloads. Choose a shorter file name or folder ({path})	la ruta es demasiado larga para Windows: como máximo {limit} caracteres con los archivos guardados mientras se descarga. Elige un nombre de archivo o carpeta más corto ({path})
+#. text in requestedit.rs
+#. Site rule: the proxy's user name or password holds a control character (a line break, a tab)
+#, machine
+	The proxy's user name and password can't hold line breaks or tabs	El nombre de usuario y la contraseña del proxy no pueden contener saltos de línea ni tabulaciones
 #. text in the Help menu's windows (About, updates, shortcuts, Tell a friend)
 #. why updates could not be checked: the newest release on the site has no number
 #, machine
@@ -5804,6 +6056,9 @@
 #, machine
 	The site's certificate isn't trusted, by yt-dlp nor by this computer: an antivirus's web filter or a proxy that reads HTTPS may be in the way. Turn its HTTPS scanning off, or add its certificate to the computer's, then look the page up again.	El certificado del sitio no es de confianza, ni para yt-dlp ni para este equipo: un filtro web de antivirus o un proxy que lee HTTPS puede estar interfiriendo. Desactiva su análisis HTTPS o añade su certificado al equipo y, a continuación, vuelve a buscar la página.
 #. text in errors.rs
+#, machine
+	the site's security certificate expired on {date}, so MDM can't be sure it's the real site (your browser warns about it too)	el certificado de seguridad del sitio caducó el {date}, por lo que MDM no puede asegurar que sea el sitio real (tu navegador también te avisaría)
+#. text in errors.rs
 #. why a download failed: the site's security certificate (what proves a secure, HTTPS, site is the one it says) is past its end date. Browsers warn about the same site
 #, machine
 	the site's security certificate has expired, so MDM can't be sure it's the real site (your browser warns about it too)	el certificado de seguridad del sitio ha caducado, por lo que MDM no puede asegurarse de que sea el sitio real (tu navegador también te lo advierte)
@@ -5811,6 +6066,10 @@
 #. why a download failed: the site's security certificate was made for other site names than the one in the address
 #, machine
 	the site's security certificate is for another site name, so MDM can't be sure it's the real site (your browser warns about it too)	el certificado de seguridad del sitio es para otro nombre de sitio, por lo que MDM no puede asegurarse de que sea el sitio real (tu navegador también te lo advierte)
+#. text in errors.rs
+#. why a download failed: the site's security certificate is self-signed
+#, machine
+	the site's security certificate is self-signed, so MDM can't be sure it's the real site (your browser warns about it too)	el certificado de seguridad del sitio es autofirmado, por lo que MDM no puede asegurar que sea el sitio real (tu navegador también te avisaría)
 #. text in errors.rs
 #. why a download failed: the site's security certificate is made for other uses than a website (its "extended key usage" leaves out web servers)
 #, machine
@@ -5980,6 +6239,10 @@
 #. remote control page (on a phone): label of the box naming this phone (shown in MDM's list of paired devices)
 #, machine
 	This device's name	Nombre de este dispositivo
+#. text in rssdlg.rs
+#. RSS feeds window: in the empty list of articles of a feed that has none
+#, machine
+	This feed has no articles right now.	Esta fuente no tiene artículos ahora mismo.
 #. message or event log entry in the main window
 #. the message when a file picked in View → Font isn't a TrueType or OpenType font MDM can read
 #, machine
@@ -6020,6 +6283,10 @@
 #. a download's error: a Google Drive file that isn't shared with everyone
 #, machine
 	this Google Drive file needs you to sign in: sign in to Google in your browser, then download it from there	este archivo de Google Drive requiere que inicie sesión: inicie sesión en Google en su navegador y, a continuación, descárguelo desde allí
+#. text in the Link grabber window
+#. Link grabber, the hover tip of a Google Drive folder's status: the folder isn't shared with everyone; how to send it with the browser's sign-in (the browser's right-click command, keep its name as the browser extension shows it)
+#, machine
+	This Google Drive folder needs you to sign in: sign in to Google in your browser, then right-click the folder's link there and choose Download with Mister Download Manager.	Esta carpeta de Google Drive requiere que inicies sesión: inicia sesión en Google en tu navegador, luego haz clic derecho en el vínculo de la carpeta y elige Descargar con Mister Download Manager.
 #. text in errors.rs
 #. a download's error: the address is a Google Drive folder, which isn't one file
 #, machine
@@ -6387,6 +6654,10 @@
 #. a download's Connection settings: the proxy typed isn't an address MDM takes; the examples stay as they are
 #, machine
 	Type the proxy as host:port, http://host:port or socks5://host:port	Escribir el proxy como host:puerto, http://host:puerto o socks5://host:puerto
+#. text in requestedit.rs
+#. Site rule: a password was typed for the proxy, but no user name
+#, machine
+	Type the proxy's user name too, or leave its password empty	Escribe también el nombre de usuario del proxy o deja la contraseña vacía
 #. text in the Scheduler window
 #. why OK is greyed when naming a new queue
 #, machine
@@ -6599,10 +6870,6 @@
 #. text in the Options window
 #, machine
 	User-Agent for manually added downloads:	User-Agent para descargas añadidas manualmente:
-#. text in the Options window
-#. Options → Connection: beside the Site rules... button: what it sets
-#, machine
-	User-Agent, headers and connections by site	User-Agent, encabezados y conexiones por sitio
 #. text in requestedit.rs
 #. Site rule / a download's Connection settings: label before the User-Agent box (the name the browser or program gives itself to sites)
 #, machine
@@ -6685,6 +6952,10 @@
 #. what a screen reader calls the list of a playlist's videos
 #, machine
 	Videos	Vídeos
+#. group box title in the Options window
+#. Options → Regional: group box title: the language of a video's sound, for videos that come with several (dubbed ones)
+#, machine
+	Videos' sound	Sonido de los vídeos
 #. text in countries.rs
 #. a country's name (where a download's server is)
 #, machine
@@ -6850,6 +7121,10 @@
 #. {n} = a number (keep the braces as they are)
 #, machine
 	Wrong code. Tries left: {n}	Código incorrecto. Intentos restantes: {n}
+#. text in the Options window
+#. Allowed certificates table: short reason label
+#, machine
+	Wrong name	Nombre incorrecto
 #. text in extracting archives (a download's log, the Archive password window)
 #. in Archive password: {name} is the archive's file name
 #. {name} = a file name (keep the braces as they are)
@@ -7102,6 +7377,11 @@
 #. said after Delete with files when some files stayed on the disk; {file} is the download's name; the files' paths follow it
 #, machine
 	{file}: these files stayed on the disk, because MDM didn't create them or another download uses them:	{file}: estos archivos se quedaron en el disco porque MDM no los creó o los usa otra descarga:
+#. text in the Link grabber window
+#. Link grabber's Source line: a Google Drive folder ({folder}: its name) in which a folder showed the most items Drive's page lists ({n}: 50), so it may hold more than are listed; what gets them all (Drive's own Download button, which makes a zip)
+#. {n} = a number (keep the braces as they are)
+#, machine
+	{folder}: Google Drive's page lists only the first {n} items of a folder, so some may be missing; Drive's own Download gets the whole folder as a zip	{folder}: la página de Google Drive solo muestra los primeros {n} elementos de una carpeta, por lo que algunos pueden faltar; el botón Descargar de Drive obtiene la carpeta completa como un archivo ZIP
 #. message or event log entry in the main window; text in the Link grabber window
 #. Link grabber's Source line, after where the links came from: a folder (an FTP folder, a web server's "Index of" page) held more files or subfolders than Link grabber lists; {folder} is its name, {n} how many of its files are listed (10,000)
 #. {n} = a number (keep the braces as they are)
@@ -7155,9 +7435,17 @@
 #, machine
 	{ip} can't be reached through {adapter}: it has no address of that kind (IPv4 or IPv6)	No se puede acceder a {ip} a través de {adapter}: el adaptador no tiene una dirección de ese tipo (IPv4 o IPv6)
 #. text in the Download video window
+#. in Download video's Sound list: a language's sound track that describes the picture for people who can't see it; {language} is the language's name
+#, machine
+	{language}, audio description	{language}, audiodescripción
+#. text in the Download video window
 #. in the Subtitles list of Download video: {language} = a language's name; the site made these subtitles automatically (speech recognition)
 #, machine
 	{language}, automatic	{language}, automáticos
+#. text in the Download video window
+#. in Download video's Sound list and the browser's video menu: the video's own sound, the language it was made in (the others are dubbed); {language} is the language's name
+#, machine
+	{language}, original	{language}, original
 #. text in a download's progress window
 #. {live} = peers connected now; {known} = peers heard of
 #, machine
@@ -7357,10 +7645,20 @@
 #, machine
 	{site} didn't give the file this time: try again in a moment	{site} no proporcionó el archivo esta vez: inténtalo de nuevo en un momento
 #. text in the Link grabber window
+#. Link grabber, the hover tip of a Google Drive folder's status ({site}: "Google Drive"): no folder at this link, or one the signed-in account may not open
+#. {site} = a web site's name such as "example.com" (keep the braces as they are)
+#, machine
+	{site} has no such folder, or it isn't shared with you.	{site} no tiene esa carpeta, o no se ha compartido contigo.
+#. text in the Link grabber window
 #. Link grabber, the hover tip of a Hugging Face repository's or GitHub release's status; {site} is "Hugging Face" or "GitHub"
 #. {site} = a web site's name such as "example.com" (keep the braces as they are)
 #, machine
 	{site} has no such repository, folder, release or tag, or it is private.	{site} no tiene ese repositorio, carpeta, versión o etiqueta, o es privado.
+#. text in the Link grabber window
+#. Link grabber, a Google Drive folder's status (the cell's hover tip): Drive ({site}: "Google Drive") answered that it gets too many requests from this computer
+#. {site} = a web site's name such as "example.com" (keep the braces as they are)
+#, machine
+	{site} is getting too many requests from this computer: try again later.	{site} está recibiendo demasiadas solicitudes de este equipo: inténtalo de nuevo más tarde.
 #. text in the Link grabber window
 #. Link grabber, a Hugging Face repository's or GitHub release's status (the cell's hover tip): the site ({site}: "Hugging Face", "GitHub") lets only so many requests through from a computer without an account; {n} minutes to wait
 #. {site} = a web site's name such as "example.com"; {n} = a number (keep the braces as they are)
@@ -8842,6 +9140,11 @@ menu	Download &video from a page...	Descargar &vídeo de una página...
 #, machine
 menu	Download in order	Descargar en orden
 #. menu command in the main window
+#. View → Draw with: opens a window offering to download Mesa's software renderer (llvmpipe, keep the name), which draws MDM's windows with far less of the processor than Windows' own (WARP)
+#. the trailing ... means it opens a window: keep it
+#, machine
+menu	Download Mesa's software renderer (llvmpipe)...	Descargar el renderizador de software de Mesa (llvmpipe)...
+#. menu command in the main window
 #. View menu: submenu choosing what draws MDM's windows: OpenGL, or Direct3D, Vulkan or Metal (graphics systems)
 #, machine
 menu	Draw with	Dibujar con
@@ -9078,6 +9381,18 @@ menu	Show &drop target	Mostrar &destino de arrastre
 #. menu command in the main window
 #, machine
 menu	Show Mister Download Manager	Mostrar Mister Download Manager
+#. menu command in the main window
+#. View → Draw with: a greyed note; Mesa's software renderer (llvmpipe, keep the name) failed on this computer, so Windows' own software renderer (WARP, keep the name) draws
+#, machine
+menu	Software (llvmpipe) didn't start here: WARP draws	El software (llvmpipe) no se inició aquí: WARP dibuja
+#. menu command in the main window
+#. View → Draw with: a greyed note; Mesa's software renderer (llvmpipe, keep the name) is downloaded and draws the windows from MDM's next start
+#, machine
+menu	Software (llvmpipe) draws from the next start	El software (llvmpipe) dibuja a partir del próximo inicio
+#. menu command in the main window
+#. View → Draw with: a greyed note; what draws the windows: Mesa's software renderer, llvmpipe (keep the name), because no graphics card here has a driver MDM can draw with
+#, machine
+menu	Software (llvmpipe): no graphics card here has a driver for MDM	Software (llvmpipe): ninguna tarjeta gráfica tiene un controlador que MDM pueda usar
 #. menu command in the main window
 #. & marks the keyboard shortcut letter: keep one & before a letter of the translation
 #, machine

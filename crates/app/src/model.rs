@@ -232,6 +232,23 @@ impl Category {
         crate::i18n::t(self.shipped_name()).to_owned()
     }
 
+    /// Its icon: the Categories tree's, and its choice's in the category drop-downs (#2008).
+    /// Silk icons standing in for IDM's XP-era category icons; a theme's icon set may replace
+    /// them (`crate::themeicons`).
+    pub fn icon(self) -> crate::chrome::IconKey {
+        let (need, silk) = match self {
+            Category::Compressed => ("cat-compressed", "page_white_zip"),
+            Category::Documents => ("cat-documents", "page_white"),
+            Category::Music => ("cat-music", "music"),
+            Category::Programs => ("cat-programs", "application_xp"),
+            Category::Video => ("cat-video", "film"),
+            Category::General => ("cat-documents", "page_white"),
+            Category::Torrents => ("cat-torrents", "folder_link"),
+            Category::Custom(_) => ("cat-folder", "folder"),
+        };
+        crate::chrome::IconKey::Themed(need, silk)
+    }
+
     /// Every category: General first.
     pub fn all() -> Vec<Category> {
         std::iter::once(Category::General)
@@ -264,21 +281,54 @@ impl Category {
         self.shipped_extensions()
     }
 
-    /// A built-in category's file types as shipped (the user's: theirs).
+    /// A built-in category's file types as shipped (the user's: theirs). IDM's lists first, then
+    /// the files people download today that IDM's leave to General (#1725): app packages and
+    /// installers of every system, disc and disk images, newer archives, e-books, OpenDocument
+    /// and spreadsheets, lossless and Opus audio, camcorder video. A list the user edited is
+    /// theirs (`BuiltinEdit::types`) and gains none of them; an untouched one has no edit, so it
+    /// follows this list. Each list: IDM's types, then #1725's (from `tar`, `xls`, `flac`, `msix`
+    /// and `m2ts` on).
     fn shipped_extensions(self) -> Vec<String> {
         let fixed: &[&str] = match self {
             Category::General | Category::Torrents => &[],
             Category::Compressed => &[
                 "zip", "rar", "r0*", "r1*", "arj", "gz", "sit", "sitx", "sea", "ace", "bz2", "7z",
+                "tar", "xz", "zst", "lz", "lzma", "lz4", "tgz", "tbz2", "txz", "cab", "iso", "img",
+                "vhd", "vhdx", "vmdk", "qcow2", "wim", "esd",
             ],
-            Category::Documents => &["doc", "pdf", "ppt", "pps", "docx", "pptx"],
+            Category::Documents => &[
+                "doc", "pdf", "ppt", "pps", "docx", "pptx", "xls", "xlsx", "odt", "ods", "odp",
+                "csv", "md", "epub", "mobi", "azw3", "djvu",
+            ],
             Category::Music => &[
-                "mp3", "wav", "wma", "mpa", "ram", "ra", "aac", "aif", "m4a", "tsa",
+                "mp3", "wav", "wma", "mpa", "ram", "ra", "aac", "aif", "m4a", "tsa", "flac",
+                "opus", "aiff", "m4b",
             ],
-            Category::Programs => &["exe", "msi"],
+            Category::Programs => &[
+                "exe",
+                "msi",
+                "msix",
+                "msixbundle",
+                "appx",
+                "appxbundle",
+                "apk",
+                "apks",
+                "xapk",
+                "aab",
+                "ipa",
+                "appimage",
+                "deb",
+                "rpm",
+                "flatpak",
+                "snap",
+                "dmg",
+                "pkg",
+                "run",
+                "jar",
+            ],
             Category::Video => &[
                 "avi", "mpg", "mpe", "mpeg", "asf", "wmv", "mov", "qt", "rm", "mp4", "flv", "m4v",
-                "webm", "ogv", "ogg", "mkv", "ts", "tsv",
+                "webm", "ogv", "ogg", "mkv", "ts", "tsv", "m2ts", "mts",
             ],
             Category::Custom(id) => {
                 return custom(id)
@@ -610,6 +660,10 @@ pub struct Item {
     /// overnight is renewed the next day); cleared as it starts again.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub waits_for_address: bool,
+    /// Its last try failed because the site's bot check refused it (`Error::BotCheck`): the
+    /// whole site is given a rest (`crate::sitewait`), not only this file. Not kept with the list.
+    #[serde(skip)]
+    pub refused_by_site: bool,
     /// It was made from a private (incognito) window's download. Saved (with Options → General →
     /// "Keep private-window downloads in the list"), unlike `context.private`, which is memory
     /// only: read back, the row stays apart from normal windows' downloads (it neither takes
@@ -678,6 +732,12 @@ pub struct Item {
     /// downloaded again or a test finds it whole.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub damaged: bool,
+    /// Its last run completed, though the file doesn't match the checksum its server announced
+    /// (#2064): the hash's kind. The file is kept (a server's hash may be of the object as it
+    /// stores it, not of what it sent): the row says "Checksum warning" until it is downloaded
+    /// again, or Verify checksum... finds it matches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checksum_warning: Option<mdm_engine::verify::Algo>,
     /// Its archive's damaged parts were just downloaded again (#1661): the test that follows is
     /// the last, never a second re-fetch. Memory only.
     #[serde(skip)]
@@ -932,6 +992,7 @@ fn tool_snapshot(p: mdm_tools::video::Progress, url: &Url) -> mdm_engine::Snapsh
         at_service: None,
         finishing: p.merging.flatten(),
         kept: None,
+        checksum_warning: None,
     }
 }
 
@@ -1453,6 +1514,7 @@ impl Item {
             referer: None,
             page: None,
             waits_for_address: false,
+            refused_by_site: false,
             private_window: false,
             file_url: None,
             own: OwnRequest::default(),
@@ -1470,6 +1532,7 @@ impl Item {
             testing: false,
             test_progress: None,
             damaged: false,
+            checksum_warning: None,
             refetched: false,
             move_from: None,
             list_bytes: 0,
@@ -1680,6 +1743,8 @@ impl Item {
                 {
                     self.waits_for_address = true;
                 }
+                self.refused_by_site =
+                    failed_now && matches!(s.failure, Some(mdm_engine::Error::BotCheck));
                 // In the interface language; the engine's English when it gave no failure.
                 self.error = s.failure.as_ref().map(crate::errors::describe).or(s.error);
                 if self.video.is_some()
@@ -1773,6 +1838,14 @@ impl Item {
                     }
                     let saved = r.saved_files();
                     add_written(self.written_files.get_or_insert_with(Vec::new), saved);
+                }
+                // Complete though its server's own checksum didn't match (#2064): kept, and said
+                // in its row, its log and Download complete. Each completion says it anew.
+                if status == Status::Complete {
+                    self.checksum_warning = s.checksum_warning;
+                    if let Some(warning) = self.checksum_warning_text(false) {
+                        self.note(warning);
+                    }
                 }
                 for n in &notices {
                     self.note(n.clone());
@@ -2092,9 +2165,63 @@ impl Item {
         })
     }
 
+    /// It completed though the file doesn't match the checksum its server announced (#2064):
+    /// "Checksum warning" in the list's Status column (`short`), whole for its tip, Properties,
+    /// its log and Download complete.
+    pub fn checksum_warning_text(&self, short: bool) -> Option<String> {
+        let algo = self.checksum_warning?;
+        if self.status != Status::Complete || self.testing || self.damaged {
+            return None;
+        }
+        Some(if short {
+            // i18n: a download's status: it finished, but the checksum its server announced didn't match its file (the file is kept). Short: the list's Status column is narrow
+            crate::i18n::t("Checksum warning").to_owned()
+        } else {
+            crate::i18n::fmt(
+                crate::i18n::t(
+                    // i18n: a download's status, whole (the Status cell's tip, Properties, the log, Download complete): it finished, but the checksum its server announced didn't match the file, which is kept. "Check it": the user can verify the file against a checksum they trust (right-click → Verify checksum...)
+                    "Downloaded, but the server's {algorithm} checksum didn't match; the file may still be fine. Check it if it matters",
+                ),
+                &[("algorithm", algo.name())],
+            )
+        })
+    }
+
     /// Every byte is in (#736): no rate and no time left, as once it is complete.
     pub fn past_last_byte(&self) -> bool {
         self.torrent.is_none() && self.snap.as_ref().is_some_and(every_byte_in)
+    }
+
+    /// The icon before its status (#2008), for what [`Item::status_text`] says: being moved,
+    /// checked or joined is still under way; an archive found damaged is a failure; a finished
+    /// torrent connected to peers is seeding. (A file kept though its server's checksum didn't
+    /// match is complete: the list draws the warning mark in its place, #2064.)
+    pub fn status_icon(&self) -> crate::icons::StatusIcon {
+        use crate::icons::StatusIcon as S;
+        if self.move_from.is_some()
+            || self.torrent_checking().is_some()
+            || self.finishing(true).is_some()
+        {
+            return S::Checking;
+        }
+        if self.damaged_text(true).is_some() {
+            return S::Error;
+        }
+        match self.status {
+            Status::Complete
+                if self
+                    .torrent
+                    .as_ref()
+                    .is_some_and(|t| t.peers > 0 || t.up_speed > 0.0) =>
+            {
+                S::Seeding
+            }
+            Status::Complete => S::Complete,
+            Status::Error => S::Error,
+            Status::Queued => S::Queued,
+            Status::Stopped => S::Paused,
+            Status::Downloading => S::Downloading,
+        }
     }
 
     pub fn status_text(&self) -> String {
@@ -2113,6 +2240,9 @@ impl Item {
         }
         if let Some(damaged) = self.damaged_text(true) {
             return damaged;
+        }
+        if let Some(warning) = self.checksum_warning_text(true) {
+            return warning;
         }
         match self.status {
             // i18n: a download's status (state it is in, not a command): finished
@@ -2856,6 +2986,7 @@ mod tests {
         it.snap = Some(super::tool_snapshot(p.clone(), &url));
         // A short word and how far in the list; the progress window says it whole.
         assert_eq!(it.status_text(), "Merging 45%");
+        assert_eq!(it.status_icon(), crate::icons::StatusIcon::Checking);
         assert_eq!(it.finishing(false).as_deref(), Some("Merging... (45%)"));
         assert!(it.past_last_byte());
         p.merging = Some(None);
@@ -2867,6 +2998,7 @@ mod tests {
         s.finishing = Some(0.5);
         it.snap = Some(s);
         assert_eq!(it.status_text(), "Checking 50%");
+        assert_eq!(it.status_icon(), crate::icons::StatusIcon::Checking);
         assert_eq!(it.finishing(false).as_deref(), Some("Verifying... (50%)"));
         assert!(it.past_last_byte());
         // Still coming in (yt-dlp's own connection receiving): a rate and a time left as before.
@@ -2884,6 +3016,61 @@ mod tests {
         p.downloaded = 99 * m;
         it.snap = Some(super::tool_snapshot(p, &url));
         assert!(!it.past_last_byte());
+    }
+
+    /// #2008: each state its icon before the status: stopped part way is paused, a finished
+    /// torrent connected to peers is seeding, an archive found damaged a failure.
+    #[test]
+    fn each_state_has_its_status_icon() {
+        use crate::icons::StatusIcon as S;
+        let mut it = video_item(Some(100), 10, Status::Downloading);
+        it.video = None;
+        for (status, icon) in [
+            (Status::Downloading, S::Downloading),
+            (Status::Stopped, S::Paused),
+            (Status::Queued, S::Queued),
+            (Status::Error, S::Error),
+            (Status::Complete, S::Complete),
+        ] {
+            it.status = status;
+            assert_eq!(it.status_icon(), icon, "{status:?}");
+        }
+        it.damaged = true;
+        assert_eq!(it.status_text(), "Damaged");
+        assert_eq!(it.status_icon(), S::Error);
+        it.damaged = false;
+        // #2064: complete though its server's checksum didn't match: a warning, still complete.
+        it.checksum_warning = Some(mdm_engine::verify::Algo::Md5);
+        assert_eq!(it.status_text(), "Checksum warning");
+        assert_eq!(it.status_icon(), S::Complete);
+        let whole = it.checksum_warning_text(false).unwrap();
+        assert!(
+            whole.starts_with("Downloaded, but the server's MD5 checksum didn't match"),
+            "{whole}"
+        );
+        it.status = Status::Downloading;
+        assert_eq!(it.checksum_warning_text(true), None, "only once complete");
+        it.status = Status::Complete;
+        it.damaged = true;
+        assert_eq!(
+            it.status_text(),
+            "Damaged",
+            "a damaged archive says so first"
+        );
+        it.damaged = false;
+        it.checksum_warning = None;
+        assert_eq!(it.status_text(), "Complete");
+        it.move_from = Some(PathBuf::from("old"));
+        assert_eq!(it.status_icon(), S::Checking);
+        it.move_from = None;
+        let spec: crate::torrents::TorrentSpec = serde_json::from_str(
+            r#"{"hash":"0123456789abcdef0123456789abcdef01234567","folder":"t"}"#,
+        )
+        .unwrap();
+        it.torrent = Some(spec);
+        assert_eq!(it.status_icon(), S::Complete, "no peers: not seeding");
+        it.torrent.as_mut().unwrap().peers = 3;
+        assert_eq!(it.status_icon(), S::Seeding);
     }
 
     /// Without a size there's no share to show: no 0 % (from #384).

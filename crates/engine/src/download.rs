@@ -159,7 +159,9 @@ pub struct Options {
     /// A limit shared by every download using the same limiter (a global speed cap), on top
     /// of the download's own.
     pub global: Option<Arc<Limiter>>,
-    /// The finished file must have this hash (else the server's announced one, if any).
+    /// The finished file must have this hash (the user's or a published one: `Hash::origin`);
+    /// without one, it is checked against the hash its server announces, if any, which only
+    /// warns (#2064).
     pub checksum: Option<crate::verify::Hash>,
     /// Reconnect a connection far slower than the others (see `SHED_*`). Beyond IDM's rule.
     pub shed_slow: bool,
@@ -235,6 +237,8 @@ pub struct Options {
     /// When that fails (a build without it, a site that refuses it too), MDM's own connection is
     /// asked as usual. Never for a form's POST or through a service account.
     pub browser_first: bool,
+    /// Certificates the user chose to trust for their `(host, port, sha256)` (#1964).
+    pub allowed_certs: Vec<crate::tls::AllowedCert>,
 }
 
 /// A callback given the path of a file the engine created (`Options::on_file_created`).
@@ -256,9 +260,13 @@ impl std::fmt::Debug for FileHook {
 /// Which proxy downloads go through (Options → Proxy / Socks).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Proxy {
-    /// "No proxy/socks" (IDM's default): direct connections.
+    /// "No proxy/socks" (IDM's default): direct connections. yt-dlp and gallery-dl are given no
+    /// proxy setting, so they keep the system's and the environment's (#1616).
     #[default]
     None,
+    /// "No proxy/socks" chosen on purpose (#1616): direct connections as [`Proxy::None`], and
+    /// yt-dlp and gallery-dl are kept off the system's and the environment's proxy too.
+    Direct,
     /// "Use system settings": Windows' proxy (and the environment's).
     System,
     /// "Manual proxy/socks configuration": `http://host:port` (or `socks5://…`), with an
@@ -322,6 +330,7 @@ impl Default for Options {
             slow_disk: None,
             keep_state: false,
             browser_first: false,
+            allowed_certs: Vec::new(),
         }
     }
 }
@@ -483,9 +492,9 @@ pub enum Error {
     #[error("{}", crate::tls::NO_ROOTS)]
     NoCertificates,
     /// The server's certificate was refused (expired, not trusted, for another name): what a
-    /// browser warns about. Retrying won't help, and there is no way around it (#762).
+    /// browser warns about. Retrying won't help unless the user allows it (#762, #1964).
     #[error("{0}")]
-    Certificate(crate::tls::CertProblem),
+    Certificate(crate::tls::CertRefusal),
 }
 
 /// What failed on the network (`Error::Net`).
@@ -642,6 +651,18 @@ pub(crate) fn strip_os_error_code(s: &str) -> String {
     s.trim().trim_end_matches('.').to_owned()
 }
 
+fn enrich_cert(err: Error, seen: &crate::server::ServerSeen) -> Error {
+    match err {
+        Error::Certificate(mut refusal) => {
+            if refusal.info.is_none() {
+                refusal.info = seen.take_refused_cert().map(Box::new);
+            }
+            Error::Certificate(refusal)
+        }
+        other => other,
+    }
+}
+
 impl From<io::Error> for Error {
     fn from(e: io::Error) -> Self {
         // NOT_READY, BAD_NETPATH, DEV_NOT_EXIST, NETNAME_DELETED, BAD_NET_NAME,
@@ -670,7 +691,7 @@ impl From<reqwest::Error> for Error {
             return Error::NoCertificates;
         }
         if let Some(problem) = crate::tls::certificate_problem(&e) {
-            return Error::Certificate(problem);
+            return Error::Certificate(problem.into());
         }
         Error::Http(Arc::new(e))
     }
@@ -918,6 +939,10 @@ pub struct Snapshot {
     /// validators, its final place), for [`crate::repair::reopen`]. None when it had none (a
     /// server without ranges).
     pub kept: Option<Arc<ResumeState>>,
+    /// Done, though the file doesn't match the checksum its server announced (#2064): the
+    /// hash's kind. The file is kept: a server's hash may be of the object as it stores it, not
+    /// of what it sent. A hash the user gave, or a published one, fails the download instead.
+    pub checksum_warning: Option<crate::verify::Algo>,
 }
 
 impl Snapshot {
@@ -1157,7 +1182,7 @@ pub async fn probe_kept(
                     },
                 }
             }
-            Err(e) => return Err(e),
+            Err(e) => return Err(enrich_cert(e, &seen)),
         }
     };
     // Whichever connection it came through, the browser-like one too (#954).
@@ -1333,6 +1358,9 @@ async fn unlock_noted(
 pub struct Outcome {
     pub path: PathBuf,
     pub size: u64,
+    /// The file doesn't match the checksum its server announced, and is kept all the same
+    /// (#2064, [`Snapshot::checksum_warning`]).
+    pub checksum_warning: Option<crate::verify::Algo>,
 }
 
 /// A running download.
@@ -1524,6 +1552,7 @@ impl Download {
                 at_service: None,
                 finishing: None,
                 kept: None,
+                checksum_warning: None,
             }),
             seen: Default::default(),
             planner: Mutex::new(None),
@@ -2092,14 +2121,7 @@ fn client_with(
     // An IP address in the URL never reaches the resolver, which drops what the chosen adapter
     // can't reach (#35): check it here.
     net::check_url(route, url)?;
-    let mut builder = Client::builder();
-    if !opts.extra_roots.is_empty() {
-        builder = builder.tls_certs_merge(
-            opts.extra_roots
-                .iter()
-                .filter_map(|der| reqwest::Certificate::from_der(der).ok()),
-        );
-    }
+    let builder = Client::builder();
     // With an adapter chosen, the system's proxy is looked up now, so that it can be checked
     // (and a proxy on this computer recognised) like the others.
     let system = match (&opts.proxy, route.is_any()) {
@@ -2125,7 +2147,7 @@ fn client_with(
     // proxy's): known here for each kind of setting.
     let mut proxied = false;
     let builder = match (&opts.proxy, system) {
-        (Proxy::None, _) => builder.no_proxy(),
+        (Proxy::None | Proxy::Direct, _) => builder.no_proxy(),
         (Proxy::System, Some(Some(proxy))) => {
             check_proxy(&proxy, true)?;
             proxied = true;
@@ -2200,7 +2222,20 @@ fn client_with(
     let to_this_computer = through_local_proxy
         || (net::is_this_computer(url.host_str().unwrap_or_default())
             && !matches!(opts.proxy, Proxy::Manual { .. } | Proxy::Pac { .. }));
-    let builder = net::bind_client(builder, route, to_this_computer)?;
+    let ports = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+    if let Some(h) = url.host_str() {
+        crate::tls::HostPort::record(&mut ports.lock().unwrap(), h, port);
+    }
+    let seen_cert = seen.clone();
+    let builder = crate::tls::configure_site(
+        builder,
+        &opts.extra_roots,
+        &opts.allowed_certs,
+        ports.clone(),
+        port,
+        Arc::new(move |info| seen_cert.record_refused_cert(info)),
+    );
+    let builder = net::bind_route(builder, route, to_this_computer)?;
     let inner = match opts.post {
         Some(_) => as_get.policy(),
         None => get_policy(),
@@ -2210,11 +2245,21 @@ fn client_with(
             .redirect(reqwest::redirect::Policy::none())
             .referer(false)
     } else if route.is_any() {
-        builder.redirect(inner)
+        builder.redirect(reqwest::redirect::Policy::custom(move |attempt| {
+            if let Some(h) = attempt.url().host_str() {
+                let p = attempt.url().port_or_known_default().unwrap_or(443);
+                crate::tls::HostPort::record(&mut ports.lock().unwrap(), h, p);
+            }
+            inner.redirect(attempt)
+        }))
     } else {
         let route = route.clone();
         let stay_here = to_this_computer && !through_local_proxy;
         builder.redirect(reqwest::redirect::Policy::custom(move |attempt| {
+            if let Some(h) = attempt.url().host_str() {
+                let p = attempt.url().port_or_known_default().unwrap_or(443);
+                crate::tls::HostPort::record(&mut ports.lock().unwrap(), h, p);
+            }
             let refused = net::check_url(&route, attempt.url()).err().or_else(|| {
                 (stay_here && !net::is_this_computer(attempt.url().host_str().unwrap_or(""))).then(
                     || net::NetError::Unbound {
@@ -2258,7 +2303,12 @@ async fn run(
     body: impl Future<Output = Result<Outcome, Error>>,
     shared: Arc<Shared>,
 ) -> Result<Outcome, Error> {
-    let result = body.await;
+    let result = body.await.map_err(|e| {
+        shared
+            .seen
+            .get()
+            .map_or(e.clone(), |seen| enrich_cert(e, seen))
+    });
     // Said as it stopped (`Shared::stopping`) when it was downloading.
     let said = shared.view.lock().unwrap().state == State::Stopping;
     match &result {
@@ -2502,10 +2552,10 @@ async fn run_fresh(
                             let head = Head::of(&resp);
                             (as_get, client1, (head, Body::Http(resp)), headers, ttfb)
                         }
-                        Err(e) => return Err(e),
+                        Err(e) => return Err(enrich_cert(e, &seen)),
                     }
                 }
-                Err(e) => return Err(e),
+                Err(e) => return Err(enrich_cert(e, &seen)),
             }
         }
     };
@@ -2572,7 +2622,8 @@ async fn run_fresh(
     // its ranges (or ignores them) leaves it on one connection (`request`).
     let wait_for_ranges = (post.is_some() || browser.is_some()) && ranges != RANGES_YES;
     let h = &head.headers;
-    // The expected hash: the user's, else what a full (200) answer announces for its content.
+    // The expected hash: the user's, else what a full (200) answer announces for its content
+    // (the server's, which only warns, and none when the answer says its body was transformed).
     let checksum = opts.checksum.clone().or_else(|| {
         (head.status == StatusCode::OK)
             .then(|| crate::verify::Hash::from_headers(h))
@@ -3006,6 +3057,7 @@ async fn run_resume(
         return Ok(Outcome {
             path: saved.dest.clone(),
             size: saved.size,
+            checksum_warning: None,
         });
     }
     // Signed links from a redirect expire: ask the original address again for today's target
@@ -3094,7 +3146,7 @@ async fn run_resume(
             }
             // Not answering now: the connections retry, and each checks its overlap.
             Err(e) if e.transient() => {}
-            Err(e) => return Err(e),
+            Err(e) => return Err(enrich_cert(e, &seen)),
         }
         Some(site)
     } else {
@@ -3236,7 +3288,9 @@ async fn refresh_final_url(
 }
 
 /// Check the finished part file against `hash` (at most two files at once: it reads them
-/// whole). No hash, nothing to do.
+/// whole). No hash, nothing to do. A file that doesn't match a hash the user gave or the site
+/// published fails ([`Error::ChecksumMismatch`]); one that doesn't match the server's own
+/// announcement goes on to complete, with a warning (#2064, [`Snapshot::checksum_warning`]).
 async fn verify_part(
     shared: &Shared,
     dest: &Path,
@@ -3256,7 +3310,7 @@ async fn verify_part(
     shared.set_state(State::Verifying);
     let _slot = SLOTS.acquire().await.map_err(|_| Error::Cancelled)?;
     let part = naming::part_path(dest);
-    let algo = hash.algo;
+    let (algo, binding) = (hash.algo, hash.binding());
     // Counted as it reads (#736): the progress window and the list show how far it is.
     let checked = shared.checked.clone();
     checked.store(0, Ordering::Relaxed);
@@ -3267,8 +3321,17 @@ async fn verify_part(
     if ok {
         shared.event(format!("Checksum verified ({})", algo.name()));
         Ok(())
-    } else {
+    } else if binding {
         Err(Error::ChecksumMismatch(algo.name()))
+    } else {
+        // The server's own: it may be of the object as stored (encoded, #2064), not of what it
+        // sent. IDM checks none; the file is kept, and the download says so.
+        shared.event(format!(
+            "Downloaded, but the server's {} checksum didn't match; the file may still be fine",
+            algo.name()
+        ));
+        shared.view.lock().unwrap().checksum_warning = Some(algo);
+        Ok(())
     }
 }
 
@@ -3367,7 +3430,12 @@ fn finish(
         shared.view.lock().unwrap().kept = Some(Arc::new(s));
     }
     let _ = std::fs::remove_file(state);
-    Ok(Outcome { path: dest, size })
+    let checksum_warning = shared.view.lock().unwrap().checksum_warning;
+    Ok(Outcome {
+        path: dest,
+        size,
+        checksum_warning,
+    })
 }
 
 /// Whether a new download to `dest` may replace the file at its place
