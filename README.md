@@ -490,8 +490,8 @@ a free download manager. [Star it on GitHub](https://github.com/anefzaoui/mister
 
 <a href="https://star-history.com/#anefzaoui/misterdownloadmanager&Date">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=anefzaoui/misterdownloadmanager&type=Date&theme=dark">
-    <img src="https://api.star-history.com/svg?repos=anefzaoui/misterdownloadmanager&type=Date" alt="Mister Download Manager's GitHub stars over time" width="600">
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=markthesuperpro/misterdownloadmanager&type=Date&theme=dark">
+    <img src="https://api.star-history.com/svg?repos=markthesuperpro/misterdownloadmanager&type=Date" alt="Mister Download Manager's GitHub stars over time" width="600">
   </picture>
 </a>
 
