@@ -3,6 +3,7 @@
 //! person chose, then watch it (stats, peers, trackers, pieces), pause, resume and remove it.
 //! Torrents are named by their info hash (40 hex digits), which the app keeps in its own list.
 
+use librqbit::storage::filesystem::open_files::OpenFiles;
 use std::collections::HashSet;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::num::NonZeroU32;
@@ -564,6 +565,9 @@ pub struct Swarm {
 pub struct Config {
     /// App storage must use ownership-checked handles, including restored sessions.
     pub require_authorization: bool,
+    /// How many of the torrents' files may be open at once, in a budget of this session's
+    /// own; None (the app): the process's budget, sized from the system's limit.
+    pub open_files: Option<usize>,
     /// Where librqbit keeps its resume data and DHT nodes (in our data folder, portable-aware).
     pub state_dir: PathBuf,
     /// Accept connections from peers (better speed; Windows may ask about the firewall once).
@@ -619,6 +623,29 @@ pub enum Bind {
 }
 
 impl Bind {
+    /// How a session binds to `route` (#35, #143): `Ok(None)` for [`mdm_engine::Route::Any`],
+    /// or `Err(adapter_label)` when the chosen adapter is gone or has no usable address.
+    pub fn for_route(route: &mdm_engine::Route) -> Result<Option<Bind>, String> {
+        match route {
+            mdm_engine::Route::Any => Ok(None),
+            mdm_engine::Route::Down { label } => Err(label.clone()),
+            // Windows: its address (strong host model, see mdm_engine::net); IPv4 when it has one.
+            #[cfg(windows)]
+            mdm_engine::Route::Bound(b) => {
+                b.v4.map(std::net::IpAddr::V4)
+                    .or(b.v6.map(std::net::IpAddr::V6))
+                    .map(|ip| Some(Bind::Address(ip)))
+                    .ok_or_else(|| b.label.clone())
+            }
+            // Linux and macOS: its device.
+            #[cfg(not(windows))]
+            mdm_engine::Route::Bound(b) => Ok(Some(Bind::Device {
+                name: b.name.clone(),
+                v4_only: b.v6.is_none(),
+            })),
+        }
+    }
+
     fn v4_only(&self) -> bool {
         match self {
             Bind::Device { v4_only, .. } => *v4_only,
@@ -634,6 +661,7 @@ impl Config {
             // Storage opens only the files MDM hands over; a session that has no grant to give
             // (the command line's throwaway one, the examples) turns this off itself.
             require_authorization: true,
+            open_files: None,
             state_dir,
             listen: true,
             upnp: true,
@@ -724,6 +752,8 @@ pub struct Torrents {
     /// Torrents being added again with their pieces kept ([`Torrents::readd`]): they read as
     /// before until the session has them back. Shared with `watch`'s thread.
     readding: Arc<Readding>,
+    /// The open files of the torrents count in this ([`Config::open_files`]).
+    budget: &'static OpenFiles,
 }
 
 pub(crate) type Handle = Arc<librqbit::ManagedTorrent>;
@@ -866,6 +896,9 @@ fn log_network(session: &Session, saved_nodes: bool, utp: bool) {
                 "the bootstrap nodes"
             }
         );
+    } else {
+        // Said as plainly as "on": a log silent about it can't be told from an older one.
+        tracing::info!("torrents: DHT off (Torrent settings or a proxy)");
     }
 }
 
@@ -980,6 +1013,12 @@ impl Torrents {
         // (`seen_files`, `files_from_bytes`) before a torrent's storage first asks for them.
         rename_plugin::load_into_memory(&cfg.state_dir.join("session"));
         let proxied = cfg.proxy.is_some();
+        // The torrents' files are opened when used, at most so many at once (#484, #525).
+        let budget: &'static OpenFiles = match cfg.open_files {
+            // Tests: a budget of the session's own, kept for the process's life.
+            Some(max) => Box::leak(Box::new(OpenFiles::new(max))),
+            None => librqbit::storage::filesystem::open_files::global(),
+        };
         let v4_only = cfg.bind.as_ref().is_some_and(Bind::v4_only);
         let bind_ip = match &cfg.bind {
             Some(Bind::Address(ip)) => Some(*ip),
@@ -1044,6 +1083,7 @@ impl Torrents {
             default_storage_factory: Some(rename_plugin::storage_factory(
                 cfg.state_dir.join("session"),
                 cfg.require_authorization,
+                budget,
             )),
             persistence: Some(SessionPersistenceConfig::Json {
                 folder: Some(cfg.state_dir.join("session")),
@@ -1079,6 +1119,11 @@ impl Torrents {
             peer_filter: (!cfg.offline).then(|| {
                 Arc::new(|peer: SocketAddr| trackers::public(peer.ip())) as librqbit::PeerFilter
             }),
+            // librqbit notices the network coming back (a new address, a wake from sleep, the
+            // DHT answering again) and dials the peers that died with it at once. A test's
+            // session is on loopback and is told itself (`Session::network_changed`): the
+            // computer running the tests changing networks doesn't reach it.
+            disable_network_watch: cfg.offline,
             ..Default::default()
         };
         prepare_saved(&cfg.state_dir.join("session"), proxied);
@@ -1167,7 +1212,13 @@ impl Torrents {
             watch,
             pause_after_check: Default::default(),
             readding,
+            budget,
         })
+    }
+
+    /// How many of the torrents' files are open now (its budget's count).
+    pub fn open_files(&self) -> usize {
+        self.budget.open_count()
     }
 
     /// The file list, without downloading. A magnet asks the swarm, for at most `wait`; how
@@ -3640,6 +3691,7 @@ mod tests {
             authorized_storage::Prepared {
                 files: vec![make(ib)],
                 parted: vec![ia, ic],
+                ..Default::default()
             },
             Arc::new(|| Err(std::io::ErrorKind::PermissionDenied.into())),
         );
@@ -3676,6 +3728,7 @@ mod tests {
             authorized_storage::Prepared {
                 files: vec![make(ib), make(ic)],
                 parted: vec![ia],
+                ..Default::default()
             },
             Arc::new(|| Err(std::io::ErrorKind::PermissionDenied.into())),
         );
@@ -3704,6 +3757,189 @@ mod tests {
         authorized_storage::forget(&session, &h2);
         seeder.stop().await;
         leecher.stop().await;
+    }
+
+    /// A torrent of 2,000 small files (up to 1000 bytes), all ticked, handed over as the app does (a few open, the
+    /// others checked and closed, given again one by one by `open_one`), in a session whose
+    /// budget is 24 open files: never more than 24 open (Linux: the process's descriptors into
+    /// the folder agree), nothing open while it is paused, and every file whole at the end.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_torrent_of_many_files_keeps_few_open() {
+        const MAX: usize = 24;
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("seed").join("set");
+        let files: Vec<(PathBuf, Vec<u8>)> = (0..2000usize)
+            .map(|i| {
+                (
+                    PathBuf::from(format!("d{:02}", i % 40)).join(format!("f{i:04}.bin")),
+                    (0..1 + (i * 37) % 1000).map(|j| (i + j) as u8).collect(),
+                )
+            })
+            .collect();
+        for (p, b) in &files {
+            let p = src.join(p);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, b).unwrap();
+        }
+        let torrent = make_torrent(&src).await;
+        let mut seeding = offline(&tmp.path().join("s1"));
+        seeding.open_files = Some(MAX);
+        let seeder = Torrents::start(seeding).await.unwrap();
+        let meta = seeder
+            .metadata(
+                &Source::File(torrent.clone()),
+                Duration::from_secs(10),
+                None,
+            )
+            .await
+            .unwrap();
+        let hash = seeder
+            .add(&torrent, &src, None, Vec::new(), false)
+            .await
+            .unwrap();
+        wait_for(&seeder, &hash, "checked", 60, |s| {
+            s.phase == Phase::Finished
+        })
+        .await;
+        assert!(seeder.open_files() <= MAX, "{}", seeder.open_files());
+        // About 1 MB at 128 KiB/s, some 8 s: paused a third of the way, well before the end
+        // even if the limit lets a second's worth through at once.
+        seeder.set_upload_limit(Some(128 * 1024));
+        let addr = seeder.listen_addr().expect("seeder listens");
+
+        let mut config = offline(&tmp.path().join("s2"));
+        config.require_authorization = true;
+        config.open_files = Some(MAX);
+        let session = config.state_dir.join("session");
+        let leecher = Torrents::start(config).await.unwrap();
+        let out = meta.folder_in(&tmp.path().join("got"));
+        // As `prepare_for`: every ticked file made, the first few handed over open.
+        let mut prepared = authorized_storage::Prepared::default();
+        for (index, f) in meta.files.iter().enumerate() {
+            let path = out.join(&f.path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .unwrap();
+            if index < 8 {
+                prepared
+                    .files
+                    .push(authorized_storage::PreparedFile { index, path, file });
+            } else {
+                prepared.later.push(authorized_storage::LaterFile {
+                    index,
+                    path,
+                    identity: [0; 5],
+                });
+            }
+        }
+        let (out2, meta2) = (out.clone(), meta.clone());
+        let given = Arc::new(AtomicUsize::new(0));
+        let given2 = given.clone();
+        let open_one: authorized_storage::OpenOne = Arc::new(move |index| {
+            // Opened again where it is, never made.
+            given2.fetch_add(1, Ordering::Relaxed);
+            let path = out2.join(&meta2.files[index].path);
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path)?;
+            Ok(authorized_storage::PreparedFile { index, path, file })
+        });
+        authorized_storage::authorize_lazily(
+            &session,
+            &meta.info_hash,
+            &out,
+            prepared,
+            Arc::new(|| Err(std::io::ErrorKind::PermissionDenied.into())),
+            open_one,
+        );
+        let h2 = leecher
+            .add(&torrent, &out, None, vec![addr], false)
+            .await
+            .unwrap();
+        let (mut most, mut most_fds) = (0, 0);
+        let sample = |most: &mut usize, most_fds: &mut usize| {
+            *most = (*most).max(leecher.open_files());
+            *most_fds = (*most_fds).max(fds_under(&out).unwrap_or(0));
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            sample(&mut most, &mut most_fds);
+            let s = leecher.stats(&h2).unwrap();
+            if s.done * 3 >= s.total && s.phase == Phase::Downloading {
+                break;
+            }
+            assert!(
+                s.phase != Phase::Finished,
+                "finished before the pause: {s:?}"
+            );
+            assert!(std::time::Instant::now() < deadline, "no transfer: {s:?}");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        leecher.pause(&h2).await.unwrap();
+        assert_eq!(leecher.open_files(), 0, "a paused torrent holds no file");
+        assert_eq!(fds_under(&out).unwrap_or(0), 0);
+
+        // Started again with no new grant (a Start that found nothing changed): each file is
+        // given again when it is first used.
+        leecher.resume(&h2).await.unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(120);
+        loop {
+            sample(&mut most, &mut most_fds);
+            let s = leecher.stats(&h2).unwrap();
+            if s.phase == Phase::Finished {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "not finished: {s:?}");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(most > 0 && most <= MAX, "at most {MAX} open, saw {most}");
+        assert!(most_fds <= MAX, "descriptors into the folder: {most_fds}");
+        assert!(
+            given.load(Ordering::Relaxed) >= files.len() - 8,
+            "every file handed over closed was given again"
+        );
+        for (p, b) in &files {
+            assert_eq!(&std::fs::read(out.join(p)).unwrap(), b, "{p:?}");
+        }
+        leecher.remove(&h2, false).await.unwrap();
+        authorized_storage::forget(&session, &h2);
+        seeder.stop().await;
+        leecher.stop().await;
+    }
+
+    /// Linux: how many of the process's descriptors are files under `dir`. Only those in two
+    /// listings of `/proc/self/fd` in a row: one listing isn't taken at one instant, and counts
+    /// a file closed and another opened while it is read.
+    fn fds_under(dir: &Path) -> Option<usize> {
+        #[cfg(target_os = "linux")]
+        {
+            let dir = std::fs::canonicalize(dir).ok()?;
+            let listing = || -> Option<std::collections::HashSet<(std::ffi::OsString, std::path::PathBuf)>> {
+                Some(
+                    std::fs::read_dir("/proc/self/fd")
+                        .ok()?
+                        .filter_map(|e| {
+                            let e = e.ok()?;
+                            let to = std::fs::read_link(e.path()).ok()?;
+                            to.starts_with(&dir).then(|| (e.file_name(), to))
+                        })
+                        .collect(),
+                )
+            };
+            let first = listing()?;
+            let second = listing()?;
+            Some(first.intersection(&second).count())
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = dir;
+            None
+        }
     }
 
     /// Ticking and unticking while it downloads (the app's Files tab: the ticked file is made,
@@ -3786,6 +4022,7 @@ mod tests {
             authorized_storage::Prepared {
                 files: vec![make(ib), make(id)],
                 parted: vec![ia, ic],
+                ..Default::default()
             },
             no_reopen(),
         );
@@ -3816,6 +4053,7 @@ mod tests {
             authorized_storage::Prepared {
                 files: vec![make(ib), make(ic), make(id)],
                 parted: vec![ia],
+                ..Default::default()
             },
             no_reopen(),
         );
@@ -4007,41 +4245,71 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(50)).await;
         };
 
-        // The window's reading, every 2 ms, from just before the re-add until it downloads
-        // again.
-        let over = std::sync::atomic::AtomicBool::new(false);
-        let sample = async {
-            let mut seen = Vec::new();
-            while !over.load(std::sync::atomic::Ordering::SeqCst) {
-                seen.push(leecher.seen(&h2));
-                tokio::time::sleep(Duration::from_millis(2)).await;
-            }
-            seen
+        // The window's readings, 2 ms apart, from just before the re-add until its own numbers
+        // are back. The re-add is run a step at a time and left where the torrent is out of the
+        // session until the watch has read it there: left to itself it is back in about 2 ms,
+        // between two of the watch's readings (#2002).
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        let pause = || tokio::time::sleep(Duration::from_millis(2));
+        let mut seen = Vec::new();
+        let mut look = |waiting_for: &str| {
+            let s = leecher
+                .seen(&h2)
+                .unwrap_or_else(|| panic!("reading {}: out of the session", seen.len()));
+            assert!(
+                std::time::Instant::now() < deadline,
+                "never {waiting_for}: {s:?}"
+            );
+            let phase = s.phase;
+            seen.push(s);
+            phase
         };
-        let readd = async {
-            leecher.readd(&h2, &torrent, false).await.unwrap();
-            let deadline = std::time::Instant::now() + Duration::from_secs(30);
-            loop {
-                let s = leecher.stats(&h2).unwrap();
-                if matches!(s.phase, Phase::Downloading | Phase::Finished) {
-                    break;
-                }
-                assert!(std::time::Instant::now() < deadline, "never resumed: {s:?}");
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-            // And a reading of the watch's own after that.
-            tokio::time::sleep(watch::EVERY * 2).await;
-            over.store(true, std::sync::atomic::Ordering::SeqCst);
+        // Whether the watch hasn't read since `last`: nothing is put meanwhile, so each of its
+        // readings is a new `Arc`.
+        let unread = |last: &Option<Arc<watch::Seen>>| {
+            leecher.watch.get(&h2).as_ref().map(Arc::as_ptr) == last.as_ref().map(Arc::as_ptr)
         };
-        let (seen, ()) = tokio::join!(sample, readd);
-        assert!(seen.len() > 20, "too few readings: {}", seen.len());
+        let mut readd = std::pin::pin!(leecher.readd(&h2, &torrent, false));
+        // Out of the session: the re-add stays there while it isn't run. It holds librqbit's
+        // persistence lock, so nothing else is added or removed in this session meanwhile.
+        while leecher.has(&h2) {
+            look("out of the session");
+            let step =
+                std::future::poll_fn(|cx| std::task::Poll::Ready(readd.as_mut().poll(cx))).await;
+            assert!(step.is_pending(), "over before it was out: {step:?}");
+            pause().await;
+        }
+        // Two readings of the watch's there: the first may have begun before the delete.
+        for _ in 0..2 {
+            let last = leecher.watch.get(&h2);
+            while unread(&last) {
+                look("read out of the session");
+                pause().await;
+            }
+        }
+        look("read out of the session");
+        assert!(!leecher.has(&h2), "back before the watch read it");
+        // Run to its end. Back and checked: the reading that finds it so ends the re-add.
+        let (readded, ()) = tokio::join!(readd, async {
+            while !matches!(
+                look("its own numbers again"),
+                Phase::Downloading | Phase::Finished
+            ) {
+                pause().await;
+            }
+        });
+        readded.unwrap();
+        // And a reading of the watch's own after that.
+        let had = leecher.watch.get(&h2);
+        while unread(&had) {
+            look("read again");
+            pause().await;
+        }
+        look("read again");
         // Never less than the reading before it (the watch's readings lag librqbit's by up to
         // one, so not against `before` itself).
         let (mut done, mut files) = (0, 0);
         for (i, s) in seen.iter().enumerate() {
-            let s = s
-                .as_ref()
-                .unwrap_or_else(|| panic!("reading {i}: out of the session"));
             let in_files: u64 = s.file_done.iter().sum();
             assert!(
                 s.done >= done && in_files >= files,
@@ -4052,7 +4320,7 @@ mod tests {
             assert_eq!(s.total, before.total, "reading {i}: {s:?}");
             (done, files) = (s.done, in_files);
         }
-        let last = seen.last().unwrap().as_ref().unwrap();
+        let last = seen.last().unwrap();
         assert!(
             matches!(last.phase, Phase::Downloading | Phase::Finished),
             "its own numbers again: {last:?}"
@@ -4164,6 +4432,7 @@ mod tests {
             authorized_storage::Prepared {
                 files: vec![make(ib)],
                 parted: vec![ia, ic],
+                ..Default::default()
             },
             Arc::new(|| Err(std::io::ErrorKind::PermissionDenied.into())),
         );
@@ -4195,6 +4464,7 @@ mod tests {
             authorized_storage::Prepared {
                 files: vec![make(ib), make(ic)],
                 parted: vec![ia],
+                ..Default::default()
             },
             Arc::new(|| Err(std::io::ErrorKind::PermissionDenied.into())),
         );
@@ -5487,5 +5757,461 @@ mod tests {
         );
         leecher.stop().await;
         seeder.stop().await;
+    }
+
+    /// A link to `to` on loopback that the test cuts and restores, as a network that drops
+    /// and comes back: cut, its connections are closed and new ones closed as soon as they are
+    /// accepted (a dial on a dead network fails at once). Every dial through it is counted
+    /// once it was decided: a dial counted while cut was refused already, whatever the test
+    /// does next.
+    struct Link {
+        addr: SocketAddr,
+        up: tokio::sync::watch::Sender<bool>,
+        dials: Arc<AtomicUsize>,
+    }
+
+    impl Link {
+        async fn to(to: SocketAddr) -> Link {
+            let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+                .await
+                .unwrap();
+            let addr = listener.local_addr().unwrap();
+            let up = tokio::sync::watch::Sender::new(true);
+            let dials = Arc::new(AtomicUsize::new(0));
+            let (state, counter) = (up.subscribe(), dials.clone());
+            tokio::spawn(async move {
+                while let Ok((mut down, _)) = listener.accept().await {
+                    if !*state.borrow() {
+                        drop(down);
+                        counter.fetch_add(1, Ordering::SeqCst);
+                        continue;
+                    }
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    let mut state = state.clone();
+                    tokio::spawn(async move {
+                        let Ok(mut peer) = tokio::net::TcpStream::connect(to).await else {
+                            return;
+                        };
+                        tokio::select! {
+                            _ = tokio::io::copy_bidirectional(&mut down, &mut peer) => {}
+                            _ = state.wait_for(|up| !*up) => {}
+                        }
+                    });
+                }
+            });
+            Link { addr, up, dials }
+        }
+
+        fn dials(&self) -> usize {
+            self.dials.load(Ordering::SeqCst)
+        }
+    }
+
+    /// `t`'s torrent `h` once `done` says so, polled; it fails after `secs`.
+    async fn wait_for(
+        t: &Torrents,
+        h: &str,
+        what: &str,
+        secs: u64,
+        done: impl Fn(&Stats) -> bool,
+    ) -> Stats {
+        let deadline = std::time::Instant::now() + Duration::from_secs(secs);
+        loop {
+            let s = t.stats(h).unwrap();
+            if done(&s) {
+                return s;
+            }
+            assert!(std::time::Instant::now() < deadline, "never {what}: {s:?}");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// Once `done` holds, polled; it fails after `secs`.
+    async fn until(what: &str, secs: u64, done: impl Fn() -> bool) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(secs);
+        while !done() {
+            assert!(std::time::Instant::now() < deadline, "never {what}");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// `t`'s torrent `h`'s peers by their state in librqbit: (queued, connecting, live, dead).
+    /// It tells when a refused dial was taken as a failure, which the link can't.
+    fn peer_states(t: &Torrents, h: &str) -> (u32, u32, u32, u32) {
+        let s = t.session.get(id(h).unwrap()).unwrap().stats();
+        s.live.map_or((0, 0, 0, 0), |l| {
+            let p = &l.snapshot.peer_stats;
+            (p.queued, p.connecting, p.live, p.dead)
+        })
+    }
+
+    /// ikatson/rqbit#363: a network that drops (Wi-Fi, sleep, a VPN switching) kills every peer
+    /// connection, and each dead peer waits out a backoff that climbs while the network is gone
+    /// (10-20 s, then 60-120 s, ... up to an hour): back on the network, the torrent stayed
+    /// stalled. Told the network came back (librqbit's watcher does it on a new address, a wake
+    /// or the DHT answering again; on loopback nothing changes, so the test tells it), the
+    /// session dials its dead peer at once, once: the download goes on within seconds, with no
+    /// burst of reconnects.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_torrent_picks_up_at_once_when_the_network_comes_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("seed").join("net");
+        std::fs::create_dir_all(&src).unwrap();
+        let data: Vec<u8> = (0..1_048_576u32).map(|i| (i % 233) as u8).collect();
+        std::fs::write(src.join("data.bin"), &data).unwrap();
+        let torrent = make_torrent(&src).await;
+        let seeder = Torrents::start(Config {
+            utp: false,
+            ..offline(&tmp.path().join("s1"))
+        })
+        .await
+        .unwrap();
+        let hash = seeder
+            .add(&torrent, &src, None, Vec::new(), false)
+            .await
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while seeder.stats(&hash).unwrap().phase != Phase::Finished {
+            assert!(std::time::Instant::now() < deadline, "seeder never checked");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        // 1 MiB at 64 KiB/s: the download lasts while the network drops and comes back.
+        seeder.set_upload_limit(Some(64 * 1024));
+        let link = Link::to(seeder.listen_addr().expect("seeder listens")).await;
+
+        // The leecher doesn't listen: the seeder can't reach it around the link.
+        let leecher = Torrents::start(Config {
+            listen: false,
+            utp: false,
+            ..offline(&tmp.path().join("s2"))
+        })
+        .await
+        .unwrap();
+        let out = tmp.path().join("got");
+        let h = leecher
+            .add(&torrent, &out, None, vec![link.addr], false)
+            .await
+            .unwrap();
+        // Downloading from the peer: while the torrent is first checked, `done` counts the
+        // bytes checked (the whole size within moments, with nothing on disk), so `done` alone
+        // could read as a download that was over before the cut.
+        wait_for(&leecher, &h, "downloading", 30, |s| {
+            s.phase == Phase::Downloading && s.peers_live == 1 && s.fetched >= 64 * 1024
+        })
+        .await;
+
+        // The network drops: the peer dies, and its retry (10-20 s later) is refused, so the
+        // next one is a minute or more away. Each stage waits for the session to have taken
+        // the failure (the peer dead, nothing dialing), never for a span of time.
+        link.up.send_replace(false);
+        let dead = || peer_states(&leecher, &h) == (0, 0, 0, 1);
+        until("the peer dead after the cut", 10, dead).await;
+        let cut = leecher.stats(&h).unwrap();
+        let dials_at_cut = link.dials();
+        until("the peer dialed again during the cut", 40, || {
+            link.dials() > dials_at_cut
+        })
+        .await;
+        until("the retry taken as refused", 10, dead).await;
+        // Bytes received, not `done`: a piece received before the cut may still be written
+        // and checked after it.
+        let stalled = leecher.stats(&h).unwrap();
+        assert_eq!(stalled.fetched, cut.fetched, "nothing came around the cut");
+
+        // Back: on its own the torrent stays stalled (the peer's backoff runs on). An absence
+        // has no signal to wait for: 2 s are watched, and a slow computer can't bring the
+        // next retry (60 s or more after the refusal) into them.
+        link.up.send_replace(true);
+        let dials = link.dials();
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        assert_eq!(
+            leecher.stats(&h).unwrap().fetched,
+            stalled.fetched,
+            "still stalled"
+        );
+        assert_eq!(link.dials(), dials, "no dial without the change");
+
+        // Told: the dead peer is dialed at once, and the download goes on: within 20 s, where
+        // its backoff would have waited a minute or more.
+        let told = std::time::Instant::now();
+        assert!(leecher.session.network_changed(), "the change acted");
+        wait_for(&leecher, &h, "downloading again", 20, |s| {
+            s.fetched > stalled.fetched
+        })
+        .await;
+        let resumed = told.elapsed();
+        wait_for(&leecher, &h, "well on again", 30, |s| {
+            s.done >= stalled.done + 128 * 1024
+        })
+        .await;
+        eprintln!(
+            "resumed {:.2} s after the change; dials: {} before the cut, {} during it, {} after",
+            resumed.as_secs_f64(),
+            dials_at_cut,
+            dials - dials_at_cut,
+            link.dials() - dials
+        );
+        assert_eq!(link.dials() - dials, 1, "one dial for the change, no storm");
+        leecher.stop().await;
+        seeder.stop().await;
+    }
+
+    /// Whether any handle of this process has `path` open (None: this system can't say).
+    /// Windows: an open that shares nothing fails while any other handle is open. Linux: an
+    /// entry of /proc/self/fd leads to it.
+    fn held(path: &Path) -> Option<bool> {
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            Some(
+                std::fs::OpenOptions::new()
+                    .read(true)
+                    .share_mode(0)
+                    .open(path)
+                    .is_err(),
+            )
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let want = std::fs::canonicalize(path).ok()?;
+            Some(
+                std::fs::read_dir("/proc/self/fd")
+                    .ok()?
+                    .filter_map(|e| std::fs::read_link(e.ok()?.path()).ok())
+                    .any(|p| p == want),
+            )
+        }
+        #[cfg(not(any(windows, target_os = "linux")))]
+        {
+            let _ = path;
+            None
+        }
+    }
+
+    /// A seeder on loopback of a torrent of two files (1 MiB, a few bytes), uploading slowly
+    /// enough for a download to be paused half-way; and the leecher's grant for them, as the
+    /// app gives it at Start (`prepare_storage`): handles opened without following a link,
+    /// opened again (never made) by `reopen`.
+    struct Swarm {
+        tmp: tempfile::TempDir,
+        seeder: Torrents,
+        torrent: Vec<u8>,
+        meta: Meta,
+        data: Vec<u8>,
+        out: PathBuf,
+        state: PathBuf,
+    }
+
+    impl Swarm {
+        async fn new() -> Swarm {
+            let tmp = tempfile::tempdir().unwrap();
+            let src = tmp.path().join("seed").join("set");
+            std::fs::create_dir_all(&src).unwrap();
+            let data: Vec<u8> = (0..1_048_576u32).map(|i| (i % 241) as u8).collect();
+            std::fs::write(src.join("data.bin"), &data).unwrap();
+            std::fs::write(src.join("notes.txt"), b"notes").unwrap();
+            let torrent = make_torrent(&src).await;
+            let seeder = Torrents::start(offline(&tmp.path().join("s1")))
+                .await
+                .unwrap();
+            let meta = seeder
+                .metadata(
+                    &Source::File(torrent.clone()),
+                    Duration::from_secs(10),
+                    None,
+                )
+                .await
+                .unwrap();
+            let hash = seeder
+                .add(&torrent, &src, None, Vec::new(), false)
+                .await
+                .unwrap();
+            wait_for(&seeder, &hash, "checked", 20, |s| {
+                s.phase == Phase::Finished
+            })
+            .await;
+            // 1 MiB at 256 KiB/s: about 4 s, paused well before the end.
+            seeder.set_upload_limit(Some(256 * 1024));
+            let out = meta.folder_in(&tmp.path().join("got"));
+            let state = tmp.path().join("s2");
+            Swarm {
+                tmp,
+                seeder,
+                torrent,
+                meta,
+                data,
+                out,
+                state,
+            }
+        }
+
+        fn path(&self, name: &str) -> PathBuf {
+            let i = self
+                .meta
+                .files
+                .iter()
+                .position(|f| f.path.ends_with(name))
+                .unwrap();
+            self.out.join(&self.meta.files[i].path)
+        }
+
+        /// What the app hands the engine at Start: every file, made if `create`.
+        fn prepared(&self, create: bool) -> std::io::Result<Vec<authorized_storage::PreparedFile>> {
+            let mut files = Vec::new();
+            for (index, f) in self.meta.files.iter().enumerate() {
+                let path = self.out.join(&f.path);
+                if create {
+                    std::fs::create_dir_all(path.parent().unwrap())?;
+                }
+                let file = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(create)
+                    .truncate(false)
+                    .open(&path)?;
+                files.push(authorized_storage::PreparedFile { index, path, file });
+            }
+            Ok(files)
+        }
+
+        fn grant(&self, create: bool) {
+            let (out, meta) = (self.out.clone(), self.meta.clone());
+            let swarm_out = self.out.clone();
+            let reopen = Arc::new(move || {
+                // Opened again where they are, never made.
+                meta.files
+                    .iter()
+                    .enumerate()
+                    .map(|(index, f)| -> std::io::Result<_> {
+                        let path = swarm_out.join(&f.path);
+                        let file = std::fs::OpenOptions::new()
+                            .read(true)
+                            .write(true)
+                            .open(&path)?;
+                        Ok(authorized_storage::PreparedFile { index, path, file })
+                    })
+                    .collect::<std::io::Result<Vec<_>>>()
+            });
+            authorized_storage::authorize(
+                &self.state.join("session"),
+                &self.meta.info_hash,
+                &out,
+                self.prepared(create).unwrap(),
+                reopen,
+            );
+        }
+
+        async fn leecher(&self) -> Torrents {
+            let mut config = offline(&self.state);
+            config.require_authorization = true;
+            Torrents::start(config).await.unwrap()
+        }
+    }
+
+    /// ikatson/rqbit#369: a paused torrent holds none of its files, so another program can
+    /// rename, move or delete them (on Windows too); started again (granted again, as at
+    /// Start), it finishes where they are; finished and shared, it holds them read-only
+    /// (Windows: a program that keeps writers out reads it) and they can be renamed while
+    /// seeded.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_paused_torrent_lets_go_of_its_files() {
+        let swarm = Swarm::new().await;
+        let addr = swarm.seeder.listen_addr().expect("seeder listens");
+        let leecher = swarm.leecher().await;
+        swarm.grant(true);
+        let hash = leecher
+            .add(&swarm.torrent, &swarm.out, None, vec![addr], false)
+            .await
+            .unwrap();
+        let data = swarm.path("data.bin");
+        wait_for(&leecher, &hash, "half-way", 30, |s| {
+            s.done >= 256 * 1024 && s.phase == Phase::Downloading
+        })
+        .await;
+        assert_ne!(held(&data), Some(false), "open while it downloads");
+
+        leecher.pause(&hash).await.unwrap();
+        let paused = leecher.stats(&hash).unwrap();
+        assert_eq!(paused.phase, Phase::Paused);
+        assert!(paused.done < paused.total, "paused half-way: {paused:?}");
+        assert_ne!(held(&data), Some(true), "a paused torrent holds no handle");
+        assert_ne!(held(&swarm.path("notes.txt")), Some(true));
+        // Another program renames it (Explorer, a script) and puts it back.
+        let moved = swarm.tmp.path().join("moved.bin");
+        std::fs::rename(&data, &moved).expect("renaming the paused file");
+        std::fs::rename(&moved, &data).unwrap();
+
+        // Start: granted again, as the app does (`prepare_storage`), then resumed.
+        swarm.grant(false);
+        leecher.resume(&hash).await.unwrap();
+        wait_for(&leecher, &hash, "finished", 60, |s| {
+            s.phase == Phase::Finished
+        })
+        .await;
+        assert_eq!(std::fs::read(&data).unwrap(), swarm.data);
+        assert_eq!(std::fs::read(swarm.path("notes.txt")).unwrap(), b"notes");
+
+        // Finished and still shared (Keep sharing).
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            let mut copy = Vec::new();
+            std::io::Read::read_to_end(
+                &mut std::fs::OpenOptions::new()
+                    .read(true)
+                    .share_mode(0x1) // FILE_SHARE_READ: refused while anyone can write it
+                    .open(&data)
+                    .expect("a reader that keeps writers out"),
+                &mut copy,
+            )
+            .unwrap();
+            assert_eq!(copy, swarm.data);
+        }
+        std::fs::rename(&data, &moved).expect("renaming the seeded file");
+        std::fs::rename(&moved, &data).unwrap();
+
+        leecher.remove(&hash, false).await.unwrap();
+        authorized_storage::forget(&swarm.state.join("session"), &hash);
+        leecher.stop().await;
+        swarm.seeder.stop().await;
+    }
+
+    /// A file deleted while its torrent was paused, made again empty by the next Start (as
+    /// `prepare_for` makes a missing file): it isn't the file the pieces are in, so nothing is
+    /// written into it as though it held them; the torrent stops saying a file changed while it
+    /// was paused. (The app takes such a torrent out and adds it again, which checks it.)
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_file_made_again_while_paused_is_not_written_into() {
+        let swarm = Swarm::new().await;
+        let addr = swarm.seeder.listen_addr().expect("seeder listens");
+        let leecher = swarm.leecher().await;
+        swarm.grant(true);
+        let hash = leecher
+            .add(&swarm.torrent, &swarm.out, None, vec![addr], false)
+            .await
+            .unwrap();
+        wait_for(&leecher, &hash, "half-way", 30, |s| {
+            s.done >= 256 * 1024 && s.phase == Phase::Downloading
+        })
+        .await;
+        leecher.pause(&hash).await.unwrap();
+        let data = swarm.path("data.bin");
+        std::fs::remove_file(&data).expect("deleting the paused file");
+
+        swarm.grant(true);
+        leecher.resume(&hash).await.unwrap();
+        let s = wait_for(&leecher, &hash, "stopped", 30, |s| s.phase == Phase::Error).await;
+        let error = s.error.unwrap_or_default();
+        assert!(error.contains("moved, deleted or replaced"), "{error}");
+        assert_eq!(
+            std::fs::metadata(&data).unwrap().len(),
+            0,
+            "nothing written into the new file"
+        );
+
+        leecher.remove(&hash, false).await.unwrap();
+        authorized_storage::forget(&swarm.state.join("session"), &hash);
+        leecher.stop().await;
+        swarm.seeder.stop().await;
     }
 }

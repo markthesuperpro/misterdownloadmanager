@@ -189,6 +189,11 @@
 #. {n} = a number (keep the braces as they are)
 #, machine
 @plural	{package}: {n} file left out, its name would lead out of its folder|{package}: {n} files left out, their names would lead out of its folder	{package}: {n} فایل نادیده گرفته شد، چون نام آن به بیرون از پوشه اشاره می‌کند|{package}: {n} فایل نادیده گرفته شدند، چون نام آن‌ها به بیرون از پوشه اشاره می‌کند
+#. count in the Link grabber window
+#. Link grabber's Source line: a Google Drive folder's ({package}: its name) items that aren't files to download (Google Forms, shortcuts, Google Sites) are left out; {n} how many
+#. {n} = a number (keep the braces as they are)
+#, machine
+@plural	{package}: {n} item left out, a Google Form, shortcut or Site isn't a file|{package}: {n} items left out, Google Forms, shortcuts and Sites aren't files	{package}: {n} مورد نادیده گرفته شد؛ فرم‌های Google، میان‌برها یا سایت‌ها فایل نیستند|{package}: {n} مورد نادیده گرفته شد؛ فرم‌های Google، میان‌برها و سایت‌ها فایل نیستند
 #. count in cnl.rs
 #. Click'n'Load window: {site} is a web site's name such as "example.com"
 #. {site} = a web site's name such as "example.com"; {n} = a number (keep the braces as they are)
@@ -352,6 +357,10 @@
 #. RSS feeds window, Download rules: shown when there are no rules yet
 #, machine
 	A rule adds the new articles whose titles it matches, as they come.	یک قانون، مقاله‌های جدیدی را که عنوانشان با آن مطابقت دارد، به‌محض انتشار اضافه می‌کند.
+#. text in the Options window
+#. Site rules window: in the empty list of rules, under its title
+#, machine
+	A rule sets the connections, User-Agent, headers or proxy for one site.	یک قانون، اتصالات، User-Agent، سرآیندها یا پراکسی را برای یک سایت تنظیم می‌کند.
 #. text in errors.rs
 #. an error: a server on this computer redirected the download to the internet, which would not go through the chosen network adapter; {adapter} its name
 #, machine
@@ -382,6 +391,10 @@
 #. why a split archive (in several files, its volumes) isn't tested yet, in "{name} isn't complete ({why})": one of its files isn't downloaded yet
 #, machine
 	a volume of it isn't there yet	یکی از بخش‌های آن هنوز موجود نیست
+#. text in the Download video window
+#. why the thumbnail-as-cover checkbox is greyed in Download video: the choice is the site's sound in a WebM file, which can't hold a picture
+#, machine
+	A WebM file can't hold a cover: choose M4A, MP3, Opus or FLAC	فایل WebM نمی‌تواند کاور داشته باشد: M4A، MP3، Opus یا FLAC را انتخاب کنید
 #. window title in the Help menu's windows (About, updates, shortcuts, Tell a friend)
 #, machine
 	About Mister Download Manager	درباره Mister Download Manager
@@ -455,6 +468,10 @@
 #. link in the empty download list: opens Add URL
 #, machine
 	Add new download	افزودن بارگیری جدید
+#. text in the Options window
+#. Options → Accounts: in the empty list of accounts, under its title
+#, machine
+	Add one to download file-host links through it.	یکی اضافه کنید تا پیوندهای میزبان فایل را از طریق آن بارگیری کنید.
 #. text in the Options window
 	Add the duplicate and overwrite the existing file	افزودن نسخهٔ تکراری و جایگزین کردن فایل موجود
 #. text in the Options window
@@ -607,6 +624,10 @@
 #. Click'n'Load window, under the question: nothing happens to the links before the user adds them in Link grabber
 #, machine
 	Allow only sites you use. Nothing is looked up or downloaded before you add it in Link grabber.	فقط به سایت‌هایی که استفاده می‌کنید اجازه دهید. هیچ چیزی قبل از افزودن آن در Link grabber جستجو یا بارگیری نمی‌شود.
+#. text in the Options window; window title in the Options window
+#. window title: HTTPS sites whose certificate the user chose to trust
+#, machine
+	Allowed certificates	گواهی‌نامه‌های مجاز
 #. text in errors.rs
 #, machine
 	already being downloaded: {path}	در حال دانلود: {path}
@@ -638,6 +659,9 @@
 #. View menu: a check item; dark mode on, whatever the system's setting
 #, machine
 	Always dark	همیشه تیره
+#. button in a dialog box
+#, machine
+	Always for this site	همیشه برای این سایت
 #. text in the Options window
 #. Options → Archives: where extracted files go
 #, machine
@@ -652,6 +676,10 @@
 #. a country's name (where a download's server is)
 #, machine
 	American Samoa	ساموآی آمریکا
+#. text in extension.rs
+#. a check of Test browser integration (Windows), one short line: an older registry entry for MDM's helper is in the way of the right one; the entry and where it leads show on the line under it
+#, machine
+	An older registry entry is in the way:	یک ورودی قدیمی‌تر در رجیستری مانع می‌شود:
 #. text in countries.rs
 #. a country's name (where a download's server is)
 #, machine
@@ -1037,6 +1065,11 @@
 #, machine
 	Central African Republic	جمهوری آفریقای مرکزی
 #. text in the Options window
+#. column title: SHA-256 certificate fingerprint
+#, machine
+	Certificate (SHA-256)	گواهی‌نامه (SHA-256)
+#. text in a dialog box; text in the Options window
+#. Certificate warning: the certificate's SHA-256 fingerprint
 #. Options → Remote → Status: the certificate's fingerprint, which the phone's browser shows when it warns about it; {fingerprint} = hex digits
 #, machine
 	Certificate (SHA-256): {fingerprint}	گواهی (SHA-256): {fingerprint}
@@ -1044,6 +1077,11 @@
 #. Options → DNS over TLS: label before the name the server's certificate shows
 #, machine
 	Certificate name:	نام گواهی:
+#. text in the Options window
+#. Options → Sites Logins: button: opens the list of allowed HTTPS site certificates
+#. the trailing ... means it is still going on: keep it
+#, machine
+	Certificates...	گواهی‌نامه‌ها...
 #. text in countries.rs
 #. a country's name (where a download's server is)
 #, machine
@@ -1095,6 +1133,11 @@
 #. event log entry after Recheck: {have} and {total} are sizes ("1.2 GB of 4 GB there")
 #, machine
 	Checked: {have} of {total} there	بررسی شد: {have} از {total} موجود است
+#. text in softgl.rs
+#. the software renderer's window: the download is done, and its files are being checked and unpacked
+#. the trailing ... means it is still going on: keep it
+#, machine
+	Checking and unpacking Mesa's software renderer...	در حال بررسی و باز کردن بسته‌بندی رندرکننده نرم‌افزاری Mesa...
 #. message or event log entry in the main window
 #. event log entry: a torrent's files are being read and checked again (Recheck)
 #, machine
@@ -1129,6 +1172,10 @@
 #. the trailing ... means it is still going on: keep it
 #, machine
 	Checking...	در حال بررسی...
+#. text in the download list (sizes, speeds, status)
+#. a download's status: it finished, but the checksum its server announced didn't match its file (the file is kept). Short: the list's Status column is narrow
+#, machine
+	Checksum warning	هشدار بررسی یکپارچگی
 #. text in countries.rs
 #. a country's name (where a download's server is)
 #, machine
@@ -1141,6 +1188,10 @@
 #. remote control page (on a phone): what the ".torrent file" button does (screen readers)
 #, machine
 	Choose a .torrent file	یک فایل .torrent را انتخاب کنید
+#. text in rssdlg.rs
+#. RSS feeds window: in the empty list of articles, under its title
+#, machine
+	Choose a feed to see its articles.	یک فید را انتخاب کنید تا مقاله‌های آن را ببینید.
 #. message or event log entry in the main window
 #. title of the file dialog of View → Font → Choose a font file
 #. title of the message when the font picked in View → Font can't be used
@@ -1288,6 +1339,10 @@
 #. window title: a download's own request settings (User-Agent, headers, connections, proxy), from File Properties → Connection...
 #, machine
 	Connection settings	تنظیمات اتصال
+#. text in the Options window
+#. Options → Connection: beside the Site rules... button: what it sets (a User-Agent, request headers, a number of connections, a proxy, each for the sites a rule names)
+#, machine
+	Connection settings by site	تنظیمات اتصال بر اساس سایت
 #. message or event log entry in the main window
 #. event log: File Properties → Connection settings changed the download's own User-Agent, headers, proxy or connections
 #, machine
@@ -1307,6 +1362,13 @@
 #. text in the Options window
 #, machine
 	Connections:	اتصالات:
+#. text in a dialog box
+#. Certificate warning: question before Continue once / Always for this site / Cancel
+#, machine
+	Continue anyway?	به هر حال ادامه می‌دهید؟
+#. button in a dialog box
+#, machine
+	Continue once	فقط یک‌بار ادامه بده
 #. link (opens a web page) in the Help menu's windows (About, updates, shortcuts, Tell a friend)
 #, machine
 	Contributors	مشارکت‌کنندگان
@@ -1570,6 +1632,9 @@
 #. button in the browser extension's window: stop offering it at each start
 #, machine
 	Don't ask again	دوباره نپرس
+#. option (radio button) in the Options window
+#, machine
+	Don't show	نمایش نده
 #. text in the Options window
 #. checkbox, Options → Downloads: Download complete and MDM's other windows that open by themselves wait while a full-screen game, app or video, a presentation or the locked screen is on, and show when the user is back
 #, machine
@@ -1704,6 +1769,11 @@
 #. {size} = a file size such as "4.2 MB"; {bytes} = a number of bytes (keep the braces as they are)
 #, machine
 	Downloaded {size} ({bytes} Bytes)	{size} ({bytes} بایت) بارگیری شد
+#. text in the download list (sizes, speeds, status)
+#. a download's status, whole (the Status cell's tip, Properties, the log, Download complete): it finished, but the checksum its server announced didn't match the file, which is kept. "Check it": the user can verify the file against a checksum they trust (right-click → Verify checksum...)
+#. {algorithm} = a checksum algorithm such as "SHA-256" (keep the braces as they are)
+#, machine
+	Downloaded, but the server's {algorithm} checksum didn't match; the file may still be fine. Check it if it matters	بارگیری شد، اما چک‌سام {algorithm} اعلام‌شده از سوی سرور با فایل مطابقت نداشت؛ ممکن است فایل همچنان سالم باشد. اگر برایتان مهم است، چک‌سام آن را بررسی کنید
 #. item in the Categories tree in the download list; value in a column's filter list in the download list; text in remote.rs
 #. a download's status (state it is in, not a command)
 #, machine
@@ -1736,6 +1806,11 @@
 #. Helpers: MDM's own copy of a helper is being downloaded (where there was none, or in place of the system's); {percent} = how far, a number
 #, machine
 	Downloading MDM's own copy... {percent}%	در حال بارگیری نسخه اختصاصی MDM... {percent}٪
+#. text in softgl.rs
+#. the software renderer's window, while it downloads; {done} and {size} = sizes (12.0 MB of 66.3 MB)
+#. {size} = a file size such as "4.2 MB" (keep the braces as they are)
+#, machine
+	Downloading Mesa's software renderer: {done} of {size}	در حال بارگیری رندرکننده نرم‌افزاری Mesa: {done} از {size}
 #. text in archtest.rs
 #. in a download's log: after its archive test found damaged files, only their bytes are downloaded again from the same server; {size} like "1.20 MB"
 #. {size} = a file size such as "4.2 MB" (keep the braces as they are)
@@ -1753,6 +1828,10 @@
 #. tab title: download settings
 #, machine
 	Downloads	بارگیری‌ها
+#. text in the Scheduler window
+#. Scheduler → Files in the queue: in the empty list, under its title
+#, machine
+	Downloads added to this queue show here.	بارگیری‌های اضافه شده به این صف اینجا نمایش داده می‌شوند.
 #. window title in a dialog box
 #. title of the window that sums up downloads added together (a playlist, a batch) once all are done
 #, machine
@@ -1823,6 +1902,10 @@
 #. Link grabber, in the empty "Save to" box: each file goes to its category's folder (Options → Save to)
 #, machine
 	Each file's category folder	پوشه دسته‌بندی هر فایل
+#. text in the Options window
+#. Options → Regional → Videos' sound: the first choice, each video's own sound (the language it was made in), the default
+#, machine
+	Each video's original	اصلی هر ویدئو
 #. text in countries.rs
 #. a country's name (where a download's server is)
 #, machine
@@ -1910,7 +1993,6 @@
 #, machine
 	Eritrea	اریتره
 #. text in a dialog box; item in the Categories tree in the download list; value in a column's filter list in the download list; text in the download list (sizes, speeds, status); text in a download's progress window; text in remote.rs
-#. in Download File Info, where the size goes: the address didn't answer
 #. a download's status (state it is in, not a command)
 #. a download's status (state it is in, not a command): it failed
 #, machine
@@ -1980,6 +2062,10 @@
 #. Options → Accounts: a note that the debrid services' support (Real-Debrid, AllDebrid, Premiumize) is new and not yet tried with real paid accounts
 #, machine
 	Experimental: built from the services' public API documentation, not yet confirmed with real accounts.	آزمایشی: از مستندات API عمومی سرویس‌ها ساخته شده است، هنوز با حساب‌های واقعی تأیید نشده است.
+#. text in the Options window
+#. Allowed certificates table: short reason label
+#, machine
+	Expired	منقضی شده
 #. message or event log entry in the main window; text in the Options window
 #, machine
 	Export	صادر شد
@@ -2230,6 +2316,10 @@
 #. {address} = an example web address with a * in the file name
 #, machine
 	For example:  {address}	برای مثال: {address}
+#. text in the Options window
+#. Options → Regional → Videos' sound: a note under the language list
+#, machine
+	For videos whose sound comes in several languages (dubbed ones), and playlists. A video without it keeps its original sound.	برای ویدئوهایی که صداهایشان به چند زبان (دوبله‌شده) هستند و لیست‌های پخش. ویدئوهای بدون آن، صدای اصلی خود را حفظ می‌کنند.
 #. text in the Add torrent window
 #. Torrent settings, under the switch that makes MDM open magnet links and .torrent files (macOS, Linux)
 #, machine
@@ -2752,6 +2842,10 @@
 #. a country's name (where a download's server is)
 #, machine
 	Italy	ایتالیا
+#. text in rssdlg.rs
+#. RSS feeds window: in the empty list of articles of a feed not read yet
+#, machine
+	Its articles show here once the feed is read.	مقالات آن پس از خوانده شدن فید اینجا نمایش داده می‌شوند.
 #. text in extracting archives (a download's log, the Archive password window)
 #. why an archive wasn't extracted in place (after "Couldn't extract {name}: "); HatchZip took its files out (the archive is gone), but moving them stopped: {to} holds those moved, {left} the others, {error} the system's reason
 #. {error} = an error message (keep the braces as they are)
@@ -3076,6 +3170,11 @@
 #. the trailing ... means it is still going on: keep it
 #, machine
 	Looking the page up...	در حال جستجوی صفحه...
+#. text in softgl.rs
+#. the software renderer's window: while MDM reads its signed list of the software renderers it may download (Mesa's llvmpipe: it draws MDM's windows where there is no graphics card)
+#. the trailing ... means it is still going on: keep it
+#, machine
+	Looking up Mesa's software renderer...	در حال جستجوی رندرکننده نرم‌افزاری Mesa...
 #. text in preview.rs
 #. the preview pane: still looking whether the file is there
 #. the trailing ... means it is still going on: keep it
@@ -3244,6 +3343,9 @@
 #. Video helpers: MDM can't download Node.js on this system (an unusual processor); Node.js and Deno are program names; "Use another program" is the button below
 #, machine
 	MDM has no copy for this system: install Node.js or Deno, or use another program	MDM نسخه‌ای برای این سیستم ندارد: Node.js یا Deno را نصب کنید، یا از برنامه دیگری استفاده کنید
+#. text in softgl.rs
+#, machine
+	MDM has no data folder	MDM پوشه داده ندارد
 #. text in remote.rs
 #. remote control page (on a phone): no pairing code is shown in MDM; "Pair a device" is MDM's button
 #, machine
@@ -3269,6 +3371,27 @@
 #. error installing ffmpeg: the list of builds MDM accepts doesn't carry MDM's own signature
 #, machine
 	MDM's list of checked ffmpeg builds isn't signed by MDM's key, so ffmpeg wasn't installed	فهرست ساخت‌های بررسی‌شده ffmpeg در MDM با کلید MDM امضا نشده است؛ بنابراین ffmpeg نصب نشد
+#. text in errors.rs
+#. error installing Mesa's software renderer: the list of builds MDM accepts couldn't be read; {detail} = the technical detail, in English
+#, machine
+	MDM's list of checked software renderers can't be read ({detail})	فهرست رندرکننده‌های نرم‌افزاری بررسی‌شده MDM قابل خواندن نیست ({detail})
+#. text in errors.rs
+#. error installing Mesa's software renderer (it draws MDM's windows where there is no graphics card): MDM installs only builds named in a list it publishes, signed with its key, and that list couldn't be downloaded; {error} = why
+#. {error} = an error message (keep the braces as they are)
+#, machine
+	MDM's list of checked software renderers could not be downloaded: {error}	فهرست رندرکننده‌های نرم‌افزاری بررسی‌شده MDM قابل بارگیری نبود: {error}
+#. text in errors.rs
+#. error installing Mesa's software renderer: the list of builds MDM accepts has none for this computer's system and processor
+#, machine
+	MDM's list of checked software renderers has none for this computer	فهرست رندرکننده‌های نرم‌افزاری بررسی‌شده MDM هیچ موردی برای این رایانه ندارد
+#. text in errors.rs
+#. error installing Mesa's software renderer: the list of builds MDM accepts is older than one this copy of MDM already used (it never goes back to an older list)
+#, machine
+	MDM's list of checked software renderers is older than one already used, so nothing was installed	فهرست رندرکننده‌های نرم‌افزاری بررسی‌شده MDM قدیمی‌تر از نسخه قبلی است، بنابراین چیزی نصب نشد
+#. text in errors.rs
+#. error installing Mesa's software renderer: the list of builds MDM accepts doesn't carry MDM's own signature
+#, machine
+	MDM's list of checked software renderers isn't signed by MDM's key, so nothing was installed	فهرست رندرکننده‌های نرم‌افزاری بررسی‌شده MDM توسط کلید MDM امضا نشده است، بنابراین چیزی نصب نشد
 #. text in whereis.rs
 #. how far a download's server is, by its round trip (60 to 150 ms)
 #, machine
@@ -3286,6 +3409,14 @@
 #. a video's status while its picture and sound are joined into one file (ffmpeg); {percent} how far, e.g. "45%"
 #, machine
 	Merging... ({percent})	در حال ادغام... ({percent})
+#. text in softgl.rs
+#. the software renderer's window: the download or its check failed; {reason} = why, a sentence's part
+#, machine
+	Mesa's software renderer couldn't be installed: {reason}	رندرکننده نرم‌افزاری Mesa قابل نصب نبود: {reason}
+#. text in softgl.rs
+#. the software renderer's window, once Mesa's llvmpipe is downloaded and checked
+#, machine
+	Mesa's software renderer is installed. MDM draws with it from its next start.	رندرکننده نرم‌افزاری Mesa نصب شد. MDM از اجرای بعدی با آن ترسیم می‌کند.
 #. text in countries.rs
 #. a country's name (where a download's server is)
 #, machine
@@ -3302,6 +3433,9 @@
 #. checkbox: the Minimize button hides MDM's windows to the notification area (system tray) instead of the taskbar
 #, machine
 	Minimize to the notification area	کوچک‌نمایی در ناحیه اعلان
+#. text in the Options window
+#, machine
+	Minimized, the window waits on the taskbar and doesn't take the focus.	پنجره کوچک‌شده در نوار وظیفه باقی می‌ماند و فوکوس را نمی‌گیرد.
 #. text in rssdlg.rs; text in the Add torrent window
 #. RSS feeds window: the unit after the minutes box
 #. Torrent settings: the unit after the minutes box
@@ -3542,6 +3676,10 @@
 #. Link grabber, a link's status: the server wants a login (401, 403)
 #, machine
 	Needs a login	به ورود نیاز دارد
+#. text in the Link grabber window
+#. Link grabber, a link's status: a Google Drive folder that isn't shared with everyone needs the browser's Google sign-in. The sentence is the cell's hover tip
+#, machine
+	Needs a sign-in	نیاز به ورود به سیستم دارد
 #. text in countries.rs
 #. a country's name (where a download's server is)
 #, machine
@@ -3622,6 +3760,10 @@
 #. button in a dialog box; text in a download's progress window
 #, machine
 	No	خیر
+#. text in the Options window
+#. Options → Accounts: the title in the empty list of debrid service accounts
+#, machine
+	No accounts yet	هنوز حسابی وجود ندارد
 #. text in a dialog box
 #, machine
 	No addresses yet	هنوز آدرسی وجود ندارد
@@ -3629,6 +3771,10 @@
 #. Options → Proxy / Socks: Test got no answer in time
 #, machine
 	No answer within 20 seconds.	پاسخی در 20 ثانیه دریافت نشد.
+#. text in rssdlg.rs
+#. RSS feeds window: the title in the empty list of articles of a feed that has none
+#, machine
+	No articles	مقاله ای وجود ندارد
 #. text in extension.rs
 #. a check of Test browser integration (Linux, macOS): MDM found no browser it can connect to (one installed as a Flatpak isn't found)
 #, machine
@@ -3676,6 +3822,18 @@
 #. title in the empty download list when there are no downloads at all
 #, machine
 	No downloads yet	هنوز دانلودی نیست
+#. text in rssdlg.rs
+#. RSS feeds window: the title in the empty list of articles, no feed chosen
+#, machine
+	No feed chosen	فیدی انتخاب نشده است
+#. text in rssdlg.rs
+#. RSS feeds window: the title in the empty list of feeds
+#, machine
+	No feeds yet	هنوز فیدی وجود ندارد
+#. text in the Scheduler window
+#. Scheduler → Files in the queue: the title in the empty list
+#, machine
+	No files in this queue	فایلی در این صف وجود ندارد
 #. text in a dialog box
 #, machine
 	No folders yet	هنوز پوشه‌ای وجود ندارد
@@ -3689,6 +3847,10 @@
 #. text in langpick.rs
 #, machine
 	No language matches.	هیچ زبانی مطابقت ندارد.
+#. text in the Link grabber window
+#. Link grabber: the title in its empty list
+#, machine
+	No links yet	هنوز پیوندی وجود ندارد
 #. text in the Options window
 #. Options → Remote → Status: on, but the computer has no local network address now
 #, machine
@@ -3720,9 +3882,17 @@
 #, machine
 	No proxy/socks	بدون پراکسی/SOCKS
 #. text in the Options window
+#. Site rules window: the title in the empty list of rules
+#, machine
+	No site rules yet	هنوز قانون سایتی وجود ندارد
+#. text in the Options window
 #. Options → Accounts: no system keyring/keychain answered (none runs, e.g. a desktop without one), so the sign-ins stay in MDM's settings folder, which only the user's account may read
 #, machine
 	No system keyring answered, so sign-ins and passwords are kept in MDM's settings, which only you can read.	هیچ دسته‌کلید سیستمی پاسخ نداد، بنابراین اطلاعات ورود و گذرواژه‌ها در تنظیمات MDM نگهداری می‌شوند که فقط شما می‌توانید آن‌ها را بخوانید.
+#. text in the Add torrent window
+#. Add torrent: the title in the empty list of files, before a torrent is read
+#, machine
+	No torrent yet	هنوز تورنتی وجود ندارد
 #. message or event log entry in the main window
 #. event log entry: Add trackers changed nothing, the torrent had them all
 #, machine
@@ -3841,8 +4011,16 @@
 #, machine
 	Not tested: it is larger than {limit} (Options → Archives). Right-click → Test archive tests it	آزمایش نشد: حجم آن بیشتر از {limit} (گزینه‌ها ← آرشیوها) است. راست‌کلیک ← آزمایش آرشیو، آن را آزمایش می‌کند
 #. text in the Options window
+#. Allowed certificates table: short reason label
+#, machine
+	Not trusted	غیرقابل اعتماد
+#. text in the Options window
 #, machine
 	Not used: file parts are written next to the file	استفاده نشده: بخش‌های فایل در کنار فایل نوشته می‌شوند
+#. text in the Options window
+#. Allowed certificates table: short reason label
+#, machine
+	Not yet valid	هنوز معتبر نیست
 #. text in a dialog box
 #. \\n starts a new line: break lines where they fit the translation
 #, machine
@@ -3964,6 +4142,10 @@
 #. the Scheduler, under "Wake the computer to run this queue" (Linux): the computer's wake alarm can be set by an administrator only
 #, machine
 	Only an administrator can allow this	فقط یک مدیر می‌تواند این را مجاز کند
+#. text in the Download video window
+#. why the thumbnail-as-cover checkbox is greyed in Download video: the choice is a video, which is saved as it is
+#, machine
+	Only an audio file gets a cover: a video is saved as it is	فقط فایل صوتی کاور می‌گیرد: ویدئو همان‌طور که هست ذخیره می‌شود
 #. tooltip (why a control is greyed) in the Download video window
 #. why "Put them into the video" is greyed: the chosen file type can't hold subtitles
 #, machine
@@ -4064,6 +4246,9 @@
 #. Options → Add an account: label before the field for the service's API token (the other way to sign in)
 #, machine
 	Or paste your API token:	یا رمز API خود را جای‌گذاری کنید:
+#. text in the Options window
+#, machine
+	Other	سایر
 #. text in the Link grabber window
 #. Link grabber: the box that edits the selected package
 #, machine
@@ -4131,12 +4316,14 @@
 #. text in the Batch download window; text in a dialog box; label in the Options window; text in the Options window; text in a download's Properties window
 #, machine
 	Password	گذرواژه
-#. text in the Link grabber window; text in the Options window
+#. text in the Link grabber window; text in the Options window; text in requestedit.rs
 #. Link grabber: the package's archives' password (a label before its box)
 #. Options → Add an account: label before the field for the password at the debrid service
+#. Site rule: label before the proxy's password, beside its user name
 #, machine
 	Password:	گذرواژه:
 #. text in the Add torrent window
+#. "Look up" is the button that reads the torrent: use its translation
 #, machine
 	Paste a magnet link or choose a .torrent file, then Look up.	یک پیوند مگنت را جای‌گذاری کنید یا یک فایل تورنت را انتخاب کنید، سپس جستجو کنید.
 #. text in the Link grabber window
@@ -4274,6 +4461,10 @@
 #. text in a download's progress window
 #, machine
 	Property	ویژگی
+#. text in the Options window
+#. Site rules: column title: the rule's proxy (empty: the one in Options → Proxy / Socks; "No proxy"; or its address)
+#, machine
+	Proxy	پراکسی
 #. text in errors.rs; text in the Options window
 #. tab title
 #, machine
@@ -4289,6 +4480,10 @@
 #, machine
 	Proxy server address	نشانی سرور پراکسی
 #. text in requestedit.rs
+#. Site rule: label before the proxy's user name (its login), under the proxy's address
+#, machine
+	Proxy user:	نام کاربری پراکسی:
+#. text in requestedit.rs
 #. Site rule / a download's Connection settings: label before the proxy choice
 #, machine
 	Proxy:	پروکسی:
@@ -4300,6 +4495,10 @@
 #. why Batch download's OK is greyed
 #, machine
 	Put a * in the address where the numbers or letters go	یک * در نشانی قرار دهید، جایی که اعداد یا حروف قرار می‌گیرند
+#. text in the Download video window
+#. checkbox in Download video: the picture the site shows for the video (its thumbnail) goes into an audio-only download (MP3, M4A, Opus, FLAC) as its cover, which music players show
+#, machine
+	Put the video's thumbnail in the audio file as its cover	تصویر بندانگشتی ویدئو را به‌عنوان کاور در فایل صوتی قرار بده
 #. checkbox in the Download video window
 #. checkbox in Download video: subtitles go inside the video file instead of a separate .srt file beside it
 #, machine
@@ -4370,6 +4569,10 @@
 #. {error} = an error message (keep the braces as they are)
 #, machine
 	Reannounce failed: {error}	اعلام مجدد ناموفق بود: {error}
+#. text in the Options window
+#. column title: certificate refusal reason allowed
+#, machine
+	Reason	دلیل
 #. text in a download's progress window
 #. column title: how much came from the peer
 #, machine
@@ -4641,6 +4844,10 @@
 #. text in the Batch download window
 #, machine
 	Second file:	فایل دوم:
+#. text in a dialog box
+#. window title when a server's HTTPS certificate is refused
+#, machine
+	Security Alert	هشدار امنیتی
 #. text in preview.rs
 #. the preview pane when no download is selected, under its title
 #, machine
@@ -4822,7 +5029,7 @@
 #. checkbox in the Options window; checkbox in a download's progress window
 #, machine
 	Show download complete dialog	نمایش کادر محاوره‌ای تکمیل دانلود
-#. checkbox in the Options window
+#. text in the Options window
 #, machine
 	Show download progress dialog when a download starts	نمایش گفتگوی پیشرفت بارگیری هنگام شروع بارگیری
 #. text in the Options window
@@ -4837,6 +5044,12 @@
 #. button in the browser extension's window: open the tutorial that adds the extension
 #, machine
 	Show me how	به من نشان بده چگونه
+#. option (radio button) in the Options window
+#, machine
+	Show minimized	کوچک‌شده نمایش بده
+#. option (radio button) in the Options window
+#, machine
+	Show normally	به‌طور عادی نمایش بده
 #. what a keyboard shortcut does in the Help menu's windows (About, updates, shortcuts, Tell a friend)
 #, machine
 	Show or hide the preview pane	نمایش یا پنهان کردن پیش‌نمایش
@@ -4929,6 +5142,7 @@
 	Sint Maarten	سینت مارتن
 #. text in the Options window
 #. Site rules: column title: the site pattern
+#. column title: site name and port
 #, machine
 	Site	سایت
 #. checkbox in the Find window
@@ -4955,6 +5169,11 @@
 #. Site rule: label before the site pattern box (example.com, *.example.com)
 #, machine
 	Site:	سایت:
+#. text in a dialog box
+#. Certificate warning: the site whose certificate was refused; {site} = host or host:port
+#. {site} = a web site's name such as "example.com" (keep the braces as they are)
+#, machine
+	Site: {site}	سایت: {site}
 #. text in the Options window
 #. tab title: user names and passwords for sites
 #, machine
@@ -4965,6 +5184,14 @@
 #. text in helpers.rs
 #, machine
 	Sites send their best quality as separate video and audio. ffmpeg puts them together into one file that plays anywhere.	سایت‌ها بهترین کیفیت خود را به صورت ویدیو و صدای جداگانه ارسال می‌کنند. ffmpeg آن‌ها را در یک فایل که در هر جایی پخش می‌شود، کنار هم قرار می‌دهد.
+#. text in the Options window
+#. Options → Sites Logins: beside the Certificates... button
+#, machine
+	Sites whose certificate you chose to trust	سایت‌هایی که گواهی‌نامه آن‌ها را مورد اعتماد قرار داده‌اید
+#. text in the Options window
+#. Allowed certificates window: explanation
+#, machine
+	Sites whose security certificate you chose to trust. Each entry is pinned to that certificate's SHA-256 fingerprint.	سایت‌هایی که گواهی‌نامه امنیتی آن‌ها را مورد اعتماد قرار داده‌اید. هر ورودی به اثرانگشت SHA-256 آن گواهی‌نامه پین شده است.
 #. text in the Link grabber window; text in a download's progress window; text in the Scheduler window; text in the Add torrent window
 #. column title: the file's size
 #. column title: file size
@@ -4998,6 +5225,10 @@
 #. button in the Download complete window: opens a menu of how long no Download complete window shows (30 minutes, 1 hour...)
 #, machine
 	Snooze	به تعویق انداختن
+#. text in softgl.rs
+#. the window's title: Mesa's software renderer, offered where no graphics card draws MDM's windows
+#, machine
+	Software renderer	رندرکننده نرم‌افزاری
 #. text in countries.rs
 #. a country's name (where a download's server is)
 #, machine
@@ -5017,9 +5248,17 @@
 #. text in a dialog box
 #, machine
 	Some of the torrent's files are already in this folder:	برخی از فایل‌های تورنت از قبل در این پوشه هستند:
+#. text in the Download video window
+#. label in Download video before the list of the languages a video's sound comes in (its original and the dubbed ones)
+#, machine
+	Sound	صدا
 #. text in the Options window
 #, machine
 	Sound file	فایل صوتی
+#. text in the Options window
+#. Options → Regional → Videos' sound: label before the list of languages
+#, machine
+	Sound language:	زبان صدا:
 #. page title in the Options window
 #, machine
 	Sound settings	تنظیمات صدا
@@ -5432,6 +5671,10 @@
 #. a check of Test browser integration: the browsers find MDM's helper program
 #, machine
 	The browsers can find Mister Download Manager	مرورگرها می‌توانند Mister Download Manager را پیدا کنند
+#. text in extension.rs
+#. under "An older registry entry is in the way" (Test browser integration, Windows): the entry is in the part of the registry 32-bit programs use, which the browsers read before the right entry; it leads to another copy of MDM or to one that was deleted; then what the Set it up button does about it
+#, machine
+	The browsers read it before the right one, and it leads to another copy of Mister Download Manager or to one that is gone. Set it up gives your account an entry of its own, which the browsers read first.	مرورگرها آن را پیش از ورودی صحیح می‌خوانند و به نسخه دیگری از Mister Download Manager یا نسخه‌ای که حذف شده است، اشاره می‌کند. «راه‌اندازی» یک ورودی اختصاصی برای حساب شما ایجاد می‌کند که مرورگرها ابتدا آن را می‌خوانند.
 #. text in the Options window
 #. Options → Remote → Status: the settings were changed; they apply on OK
 #, machine
@@ -5540,6 +5783,10 @@
 #. text in errors.rs
 #, machine
 	the downloaded program doesn't match its signed checksum	برنامه دانلود شده با جمع کنترلی امضا شده آن مطابقت ندارد
+#. text in errors.rs
+#. error installing Mesa's software renderer: a file downloaded isn't the one named in the list of builds MDM accepts (its checksum differs), so it was thrown away
+#, machine
+	the downloaded software renderer isn't the build MDM's list of checked builds names, so it wasn't installed	رندرکننده نرم‌افزاری بارگیری‌شده، نسخه نام‌برده‌شده در فهرست نسخه‌های بررسی‌شده MDM نیست، بنابراین نصب نشد
 #. message or event log entry in the main window
 #. in the empty download list, under its title
 #, machine
@@ -5656,6 +5903,10 @@
 #. why a download failed (#1102): the folder and file name together are longer than Windows allows ({limit} characters, 259), counting the temporary files saved beside the file while it downloads (their names are longer). {path} = the path
 #, machine
 	the path is too long for Windows: at most {limit} characters with the files saved while it downloads. Choose a shorter file name or folder ({path})	مسیر برای Windows بیش از حد طولانی است: حداکثر {limit} کاراکتر با فایل‌هایی که هنگام بارگیری ذخیره می‌شوند. نام فایل یا پوشه کوتاه‌تری انتخاب کنید ({path})
+#. text in requestedit.rs
+#. Site rule: the proxy's user name or password holds a control character (a line break, a tab)
+#, machine
+	The proxy's user name and password can't hold line breaks or tabs	نام کاربری و گذرواژه پراکسی نمی‌توانند شامل شکست خط یا تب باشند
 #. text in the Help menu's windows (About, updates, shortcuts, Tell a friend)
 #. why updates could not be checked: the newest release on the site has no number
 #, machine
@@ -5763,6 +6014,9 @@
 #, machine
 	The site's certificate isn't trusted, by yt-dlp nor by this computer: an antivirus's web filter or a proxy that reads HTTPS may be in the way. Turn its HTTPS scanning off, or add its certificate to the computer's, then look the page up again.	گواهی سایت نه توسط yt-dlp و نه توسط این رایانه مورد اعتماد نیست: فیلتر وب یک آنتی‌ویروس یا یک پروکسی که HTTPS را می‌خواند ممکن است مانع باشد. اسکن HTTPS آن را خاموش کنید، یا گواهی آن را به رایانه اضافه کنید، سپس صفحه را دوباره جستجو کنید.
 #. text in errors.rs
+#, machine
+	the site's security certificate expired on {date}, so MDM can't be sure it's the real site (your browser warns about it too)	گواهی‌نامه امنیتی سایت در تاریخ {date} منقضی شده است، بنابراین MDM نمی‌تواند مطمئن باشد که این سایت واقعی است (مرورگر شما نیز در مورد آن هشدار می‌دهد)
+#. text in errors.rs
 #. why a download failed: the site's security certificate (what proves a secure, HTTPS, site is the one it says) is past its end date. Browsers warn about the same site
 #, machine
 	the site's security certificate has expired, so MDM can't be sure it's the real site (your browser warns about it too)	گواهی امنیتی سایت منقضی شده است، بنابراین MDM نمی‌تواند مطمئن باشد که این سایت واقعی است (مرورگر شما نیز درباره آن هشدار می‌دهد)
@@ -5770,6 +6024,10 @@
 #. why a download failed: the site's security certificate was made for other site names than the one in the address
 #, machine
 	the site's security certificate is for another site name, so MDM can't be sure it's the real site (your browser warns about it too)	گواهی امنیتی سایت برای نام سایتی دیگر صادر شده است، بنابراین MDM نمی‌تواند مطمئن باشد که این سایت واقعی است (مرورگر شما نیز درباره آن هشدار می‌دهد)
+#. text in errors.rs
+#. why a download failed: the site's security certificate is self-signed
+#, machine
+	the site's security certificate is self-signed, so MDM can't be sure it's the real site (your browser warns about it too)	گواهی‌نامه امنیتی سایت خودامضا است، بنابراین MDM نمی‌تواند مطمئن باشد که این سایت واقعی است (مرورگر شما نیز در مورد آن هشدار می‌دهد)
 #. text in errors.rs
 #. why a download failed: the site's security certificate is made for other uses than a website (its "extended key usage" leaves out web servers)
 #, machine
@@ -5939,6 +6197,10 @@
 #. remote control page (on a phone): label of the box naming this phone (shown in MDM's list of paired devices)
 #, machine
 	This device's name	نام این دستگاه
+#. text in rssdlg.rs
+#. RSS feeds window: in the empty list of articles of a feed that has none
+#, machine
+	This feed has no articles right now.	این فید در حال حاضر مقاله‌ای ندارد.
 #. message or event log entry in the main window
 #. the message when a file picked in View → Font isn't a TrueType or OpenType font MDM can read
 #, machine
@@ -5979,6 +6241,10 @@
 #. a download's error: a Google Drive file that isn't shared with everyone
 #, machine
 	this Google Drive file needs you to sign in: sign in to Google in your browser, then download it from there	برای دسترسی به این فایل Google Drive باید وارد شوید: در مرورگر وارد Google شوید، سپس فایل را از آنجا بارگیری کنید
+#. text in the Link grabber window
+#. Link grabber, the hover tip of a Google Drive folder's status: the folder isn't shared with everyone; how to send it with the browser's sign-in (the browser's right-click command, keep its name as the browser extension shows it)
+#, machine
+	This Google Drive folder needs you to sign in: sign in to Google in your browser, then right-click the folder's link there and choose Download with Mister Download Manager.	این پوشه Google Drive نیاز به ورود شما به سیستم دارد: در مرورگر خود وارد Google شوید، سپس روی پیوند پوشه راست‌کلیک کرده و Download with Mister Download Manager را انتخاب کنید.
 #. text in errors.rs
 #. a download's error: the address is a Google Drive folder, which isn't one file
 #, machine
@@ -6346,6 +6612,10 @@
 #. a download's Connection settings: the proxy typed isn't an address MDM takes; the examples stay as they are
 #, machine
 	Type the proxy as host:port, http://host:port or socks5://host:port	پروکسی را به صورت host:port، http://host:port یا socks5://host:port تایپ کنید
+#. text in requestedit.rs
+#. Site rule: a password was typed for the proxy, but no user name
+#, machine
+	Type the proxy's user name too, or leave its password empty	نام کاربری پراکسی را نیز وارد کنید یا گذرواژه آن را خالی بگذارید
 #. text in the Scheduler window
 #. why OK is greyed when naming a new queue
 #, machine
@@ -6555,10 +6825,6 @@
 #, machine
 	User-Agent for manually added downloads:	User-Agent برای دانلودهای اضافه شده دستی:
 #. text in the Options window
-#. Options → Connection: beside the Site rules... button: what it sets
-#, machine
-	User-Agent, headers and connections by site	User-Agent، سرآیندها و اتصالات بر اساس وب‌سایت
-#. text in the Options window
 #, machine
 	User:	کاربر:
 #. label in the Options window
@@ -6636,6 +6902,10 @@
 #. what a screen reader calls the list of a playlist's videos
 #, machine
 	Videos	ویدیوها
+#. group box title in the Options window
+#. Options → Regional: group box title: the language of a video's sound, for videos that come with several (dubbed ones)
+#, machine
+	Videos' sound	صدای ویدئوها
 #. text in countries.rs
 #. a country's name (where a download's server is)
 #, machine
@@ -6797,6 +7067,10 @@
 #. {n} = a number (keep the braces as they are)
 #, machine
 	Wrong code. Tries left: {n}	کد اشتباه است. تلاش‌های باقی‌مانده: {n}
+#. text in the Options window
+#. Allowed certificates table: short reason label
+#, machine
+	Wrong name	نام اشتباه
 #. text in extracting archives (a download's log, the Archive password window)
 #. in Archive password: {name} is the archive's file name
 #. {name} = a file name (keep the braces as they are)
@@ -7045,6 +7319,11 @@
 #. said after Delete with files when some files stayed on the disk; {file} is the download's name; the files' paths follow it
 #, machine
 	{file}: these files stayed on the disk, because MDM didn't create them or another download uses them:	{file}: این فایل‌ها روی دیسک باقی ماندند، زیرا MDM آن‌ها را ایجاد نکرده یا بارگیری دیگری از آن‌ها استفاده می‌کند:
+#. text in the Link grabber window
+#. Link grabber's Source line: a Google Drive folder ({folder}: its name) in which a folder showed the most items Drive's page lists ({n}: 50), so it may hold more than are listed; what gets them all (Drive's own Download button, which makes a zip)
+#. {n} = a number (keep the braces as they are)
+#, machine
+	{folder}: Google Drive's page lists only the first {n} items of a folder, so some may be missing; Drive's own Download gets the whole folder as a zip	{folder}: صفحه Google Drive فقط {n} مورد اول یک پوشه را فهرست می‌کند، بنابراین ممکن است برخی از موارد جا مانده باشند؛ با دکمه Download خود Drive می‌توانید کل پوشه را به‌صورت یک فایل فشرده بارگیری کنید
 #. message or event log entry in the main window; text in the Link grabber window
 #. Link grabber's Source line, after where the links came from: a folder (an FTP folder, a web server's "Index of" page) held more files or subfolders than Link grabber lists; {folder} is its name, {n} how many of its files are listed (10,000)
 #. {n} = a number (keep the braces as they are)
@@ -7098,9 +7377,17 @@
 #, machine
 	{ip} can't be reached through {adapter}: it has no address of that kind (IPv4 or IPv6)	از طریق {adapter} نمی‌توان به {ip} دسترسی داشت: این آداپتور آدرسی از این نوع (IPv4 یا IPv6) ندارد
 #. text in the Download video window
+#. in Download video's Sound list: a language's sound track that describes the picture for people who can't see it; {language} is the language's name
+#, machine
+	{language}, audio description	{language}، توصیف صوتی
+#. text in the Download video window
 #. in the Subtitles list of Download video: {language} = a language's name; the site made these subtitles automatically (speech recognition)
 #, machine
 	{language}, automatic	{language}، خودکار
+#. text in the Download video window
+#. in Download video's Sound list and the browser's video menu: the video's own sound, the language it was made in (the others are dubbed); {language} is the language's name
+#, machine
+	{language}, original	{language}، صدای اصلی
 #. text in a download's progress window
 #. {live} = peers connected now; {known} = peers heard of
 #, machine
@@ -7300,10 +7587,20 @@
 #, machine
 	{site} didn't give the file this time: try again in a moment	{site} این بار فایل را ارائه نکرد: کمی دیگر دوباره امتحان کنید
 #. text in the Link grabber window
+#. Link grabber, the hover tip of a Google Drive folder's status ({site}: "Google Drive"): no folder at this link, or one the signed-in account may not open
+#. {site} = a web site's name such as "example.com" (keep the braces as they are)
+#, machine
+	{site} has no such folder, or it isn't shared with you.	{site} چنین پوشه‌ای ندارد، یا با شما به اشتراک گذاشته نشده است.
+#. text in the Link grabber window
 #. Link grabber, the hover tip of a Hugging Face repository's or GitHub release's status; {site} is "Hugging Face" or "GitHub"
 #. {site} = a web site's name such as "example.com" (keep the braces as they are)
 #, machine
 	{site} has no such repository, folder, release or tag, or it is private.	{site} چنین مخزن، پوشه، انتشار یا برچسبی ندارد، یا خصوصی است.
+#. text in the Link grabber window
+#. Link grabber, a Google Drive folder's status (the cell's hover tip): Drive ({site}: "Google Drive") answered that it gets too many requests from this computer
+#. {site} = a web site's name such as "example.com" (keep the braces as they are)
+#, machine
+	{site} is getting too many requests from this computer: try again later.	{site} درخواست‌های زیادی از این رایانه دریافت می‌کند: لطفا بعدا دوباره امتحان کنید.
 #. text in the Link grabber window
 #. Link grabber, a Hugging Face repository's or GitHub release's status (the cell's hover tip): the site ({site}: "Hugging Face", "GitHub") lets only so many requests through from a computer without an account; {n} minutes to wait
 #. {site} = a web site's name such as "example.com"; {n} = a number (keep the braces as they are)
@@ -8764,6 +9061,11 @@ menu	Download &video from a page...	دانلود &ویدئو از یک صفحه.
 #, machine
 menu	Download in order	به ترتیب بارگیری شود
 #. menu command in the main window
+#. View → Draw with: opens a window offering to download Mesa's software renderer (llvmpipe, keep the name), which draws MDM's windows with far less of the processor than Windows' own (WARP)
+#. the trailing ... means it opens a window: keep it
+#, machine
+menu	Download Mesa's software renderer (llvmpipe)...	بارگیری رندرکننده نرم‌افزاری Mesa (llvmpipe)...
+#. menu command in the main window
 #. View menu: submenu choosing what draws MDM's windows: OpenGL, or Direct3D, Vulkan or Metal (graphics systems)
 #, machine
 menu	Draw with	ترسیم با
@@ -9000,6 +9302,18 @@ menu	Show &drop target	نمایش هدف &رها کردن
 #. menu command in the main window
 #, machine
 menu	Show Mister Download Manager	نمایش Mister Download Manager
+#. menu command in the main window
+#. View → Draw with: a greyed note; Mesa's software renderer (llvmpipe, keep the name) failed on this computer, so Windows' own software renderer (WARP, keep the name) draws
+#, machine
+menu	Software (llvmpipe) didn't start here: WARP draws	نرم‌افزار (llvmpipe) در اینجا شروع نشد: WARP ترسیم می‌کند
+#. menu command in the main window
+#. View → Draw with: a greyed note; Mesa's software renderer (llvmpipe, keep the name) is downloaded and draws the windows from MDM's next start
+#, machine
+menu	Software (llvmpipe) draws from the next start	نرم‌افزار (llvmpipe) از اجرای بعدی ترسیم می‌کند
+#. menu command in the main window
+#. View → Draw with: a greyed note; what draws the windows: Mesa's software renderer, llvmpipe (keep the name), because no graphics card here has a driver MDM can draw with
+#, machine
+menu	Software (llvmpipe): no graphics card here has a driver for MDM	نرم‌افزار (llvmpipe): هیچ کارت گرافیکی در اینجا درایوری ندارد که MDM بتواند با آن ترسیم کند
 #. menu command in the main window
 #. & marks the keyboard shortcut letter: keep one & before a letter of the translation
 #, machine

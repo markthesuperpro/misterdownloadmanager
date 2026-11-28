@@ -538,6 +538,9 @@ enum Cmd {
     /// View → Draw with → OpenGL / Direct3D, Vulkan or Metal (#89, #206), from the next start.
     #[cfg(gpu)]
     DrawWith(crate::renderer::Api),
+    /// View → Draw with → Download Mesa's software renderer (Windows, #476): its offer.
+    #[cfg(windows)]
+    SoftwareRenderer,
     /// View → Window system → Automatic (`None`), X11 (XWayland) or Wayland (Linux, #624), from
     /// the next start.
     #[cfg(target_os = "linux")]
@@ -1421,6 +1424,15 @@ pub struct App {
     /// Download File Info's open answers, for the download each was given to (by id) to start
     /// from (#28: a one-time link refuses a second request).
     kept_answers: std::collections::HashMap<u64, mdm_engine::KeptAnswer>,
+    /// Certificates allowed for one download only ("Continue once", #1964).
+    once_certs: std::collections::HashMap<u64, Vec<mdm_engine::AllowedCert>>,
+    /// Downloads started interactively (not by a queue/scheduler), which may prompt on a
+    /// refused certificate (#1964).
+    interactive_starts: std::collections::HashSet<u64>,
+    /// Refused-certificate prompts waiting to be shown (#1964).
+    cert_asks: std::collections::VecDeque<(u64, mdm_engine::CertInfo, String)>,
+    /// The refused-certificate prompt currently open (#1964).
+    cert_ask: Option<(u64, mdm_engine::CertInfo, String)>,
     /// Help menu windows.
     about: Option<crate::help::About>,
     updates: Option<crate::help::Updates>,
@@ -1438,6 +1450,14 @@ pub struct App {
     /// The browser extension's offer (extension.rs), and whether this run has weighed it.
     extension: Option<crate::extension::Extension>,
     extension_weighed: bool,
+    /// Mesa's software renderer's offer (softgl.rs, #476: Windows, where WARP draws), the list
+    /// read for the start's offer, and whether this run has weighed it.
+    #[cfg(windows)]
+    soft_gl: Option<crate::softgl::Offer>,
+    #[cfg(windows)]
+    soft_gl_lookup: Option<crate::softgl::Lookup>,
+    #[cfg(windows)]
+    soft_gl_weighed: bool,
     /// The weekly update check, while it runs.
     auto_update: Option<crate::help::Slot>,
     /// The automatic check found a new version: its window comes to the front once shown.
@@ -1754,6 +1774,8 @@ pub struct App {
     queues: Vec<Queue>,
     /// Failure time and count per download, for queue retries.
     failures: HashMap<u64, (Instant, u32)>,
+    /// Sites resting after their bot check refused a download (`crate::sitewait`).
+    site_waits: crate::sitewait::SiteWaits,
     /// MDM's own helpers kept up to date while it runs (#1544).
     keeper: crate::helpers::Keeper,
     /// Videos and galleries that failed with words meaning their helper is out of date (#1544):
@@ -1870,6 +1892,21 @@ pub(crate) fn mark_hook(url: &url::Url, referrer: Option<&str>) -> mdm_engine::F
     mdm_engine::FileHook::new(move |path: &std::path::Path| {
         crate::webmark::mark(path, &url, referrer.as_deref());
     })
+}
+
+/// Whether `s` names a .torrent file on this computer (a path, as a file association or a drop
+/// hands it over), not one on the web: by its form, without asking the disk on the window's
+/// thread (#1292). Add torrent reads it beside the window, and says so when it isn't there.
+fn torrent_file_path(s: &str) -> bool {
+    let s = s.trim().trim_matches('"');
+    if !s.to_ascii_lowercase().ends_with(".torrent") {
+        return false;
+    }
+    // `C:\x.torrent` reads as an address whose scheme is the drive letter.
+    match url::Url::parse(s) {
+        Ok(u) => u.scheme().len() == 1,
+        Err(_) => true,
+    }
 }
 
 /// The Google Drive file whose player the browser's video button was clicked over (#34, #758):
@@ -2078,22 +2115,6 @@ fn sort_key(it: &Item, col: usize, queued: bool) -> (f64, String) {
     }
 }
 
-/// Silk icons standing in for IDM's XP-era category icons.
-/// A theme's icon set may replace them (`crate::themeicons`).
-fn category_icon(c: Category) -> IconKey {
-    let (need, silk) = match c {
-        Category::Compressed => ("cat-compressed", "page_white_zip"),
-        Category::Documents => ("cat-documents", "page_white"),
-        Category::Music => ("cat-music", "music"),
-        Category::Programs => ("cat-programs", "application_xp"),
-        Category::Video => ("cat-video", "film"),
-        Category::General => ("cat-documents", "page_white"),
-        Category::Torrents => ("cat-torrents", "folder_link"),
-        Category::Custom(_) => ("cat-folder", "folder"),
-    };
-    IconKey::Themed(need, silk)
-}
-
 impl App {
     /// For a run without a window (#157): downloads go to `downloads` when given (a server's
     /// share), and nothing waits for an answer from someone at the computer.
@@ -2209,6 +2230,12 @@ impl App {
             start,
         );
         app.zoom = zoom;
+        // The chosen network adapter (#35) before the first frame's commands, which run before
+        // the clock's `network_adapter_tick`: a torrent session a magnet link started then was
+        // held to no adapter.
+        let route = app.netwatch.route(&app.settings.net_adapter, ctx);
+        crate::settings::share_route(route.clone());
+        app.route = route;
         // The unfinished downloads' resume states: beside the window, which opens with the list
         // as saved (a folder that doesn't answer held its first frame for 21 s).
         let repaint = ctx.clone();
@@ -2240,6 +2267,11 @@ impl App {
         start: crate::Start,
     ) -> Self {
         let settings = loaded.settings;
+        // Torrent settings from the start: a command at the first frame (a magnet link Windows
+        // started MDM for) may start the session before the clock's first `torrent_tick`.
+        let torrent_host = crate::torrents::Host::new(
+            crate::torrents::state_dir().and_then(|d| settings.torrent_config(d)),
+        );
         let mut queues = loaded.queues;
         if queues.len() < 2 {
             // The built-in queues' names are saved in English and translated where shown
@@ -2326,6 +2358,12 @@ impl App {
             shown_existing: None,
             extension: None,
             extension_weighed: false,
+            #[cfg(windows)]
+            soft_gl: None,
+            #[cfg(windows)]
+            soft_gl_lookup: None,
+            #[cfg(windows)]
+            soft_gl_weighed: false,
             auto_update: None,
             raise_updates: false,
             raise_options: false,
@@ -2335,6 +2373,10 @@ impl App {
             file_info_waiting: Default::default(),
             zip_preview_asked: None,
             kept_answers: Default::default(),
+            once_certs: Default::default(),
+            interactive_starts: Default::default(),
+            cert_asks: Default::default(),
+            cert_ask: None,
             progress: Vec::new(),
             complete: Vec::new(),
             finishing: Vec::new(),
@@ -2408,7 +2450,7 @@ impl App {
             blocklist_busy: Default::default(),
             public_trackers: Default::default(),
             torrents_started: false,
-            torrent_host: crate::torrents::Host::new(),
+            torrent_host,
             remote: None,
             remote_torrents: Vec::new(),
             cnl,
@@ -2493,6 +2535,7 @@ impl App {
             last_layout: None,
             queues,
             failures: HashMap::new(),
+            site_waits: Default::default(),
             keeper: Default::default(),
             healing: HashMap::new(),
             heal_retry: Default::default(),
@@ -2570,33 +2613,18 @@ impl App {
                 Cmd::AddUrl,
             )
         };
-        let (title, why) = (crate::i18n::t(title), crate::i18n::t(why));
-        let title_font = winui::tahoma_bold();
-        let tw = winui::text_width_font(p, title_font.clone(), title);
-        let ww = winui::text_width(p, why);
-        let aw = winui::text_width(p, crate::i18n::t(action));
-        // The block: icon 40, title, reason, link; in the middle, or under the header when
-        // the list is short.
-        let block_h = 40.0 + 14.0 + 16.0 + 8.0 + 13.0 + 14.0 + 13.0;
-        let top = (body.center().y - block_h / 2.0).max(body.top() + 16.0);
-        let cx = body.center().x;
-        // A download glyph in the muted ink (outlined, as the toolbar's icons are).
-        let ink = egui::Stroke::new(1.5, winui::MUTED());
-        let c = winui::rect(egui::Rect::from_center_size(
-            pos2(cx, top + 20.0),
-            egui::vec2(1.0, 1.0),
-        ))
-        .center();
-        p.circle_stroke(c, 19.0, ink);
-        p.line_segment([c + egui::vec2(0.0, -10.0), c + egui::vec2(0.0, 9.0)], ink);
-        p.line_segment([c + egui::vec2(-7.0, 2.0), c + egui::vec2(0.0, 9.0)], ink);
-        p.line_segment([c + egui::vec2(7.0, 2.0), c + egui::vec2(0.0, 9.0)], ink);
-        let y = top + 40.0 + 14.0 + 12.0;
-        winui::text_font(p, title_font, cx - tw / 2.0, y, title, winui::TEXT());
-        let y = y + 8.0 + 13.0;
-        winui::text(p, cx - ww / 2.0, y, why, winui::MUTED());
-        let y = y + 14.0 + 13.0;
-        winui::link(ui, p, cx - aw / 2.0, y, action, "empty-action").then_some(cmd)
+        // The shared block (#2008), in the list's rows (`body` is English).
+        winui::empty_state(
+            ui,
+            p,
+            winui::rect(body),
+            crate::icons::EmptyIcon::Downloads,
+            title,
+            why,
+            Some(action),
+            "empty-action",
+        )
+        .then_some(cmd)
     }
 
     /// The strip under the list: how many downloads are shown and selected, how many run and
@@ -2738,6 +2766,14 @@ impl App {
                 // i18n: a download's status (state it is in, not a command): it failed
                 Status::Error => "Error",
             },
+            // Extracting an archive is still under way, as checking it is.
+            status_icon: if self.extracts.extracting(it.id) {
+                crate::icons::StatusIcon::Checking
+            } else {
+                it.status_icon()
+            },
+            // Its server's checksum didn't match the file kept (#2064).
+            warned: !self.extracts.extracting(it.id) && it.checksum_warning_text(true).is_some(),
             icon: file_icon(&it.file_name),
             queued: queued.contains(&it.id),
             // A progress bar only while the download is in flight: a finished file is whole, and
@@ -2790,7 +2826,11 @@ impl App {
             // A short word and a percentage in the cell while checked or joined (#736): the
             // whole words in its tip and for a screen reader.
             status_whole: (!self.extracts.extracting(it.id))
-                .then(|| it.finishing(false).or_else(|| it.damaged_text(false)))
+                .then(|| {
+                    it.finishing(false)
+                        .or_else(|| it.damaged_text(false))
+                        .or_else(|| it.checksum_warning_text(false))
+                })
                 .flatten(),
             // The limit holding it back (#1191), in the Transfer rate cell's tip.
             rate_tip: receiving
@@ -2898,6 +2938,12 @@ impl App {
             item.replace_file = fi.replaces();
         }
         self.selection.set(id);
+        if !fi.once_certs.is_empty() {
+            self.once_certs
+                .entry(id)
+                .or_default()
+                .extend(fi.once_certs.iter().cloned());
+        }
         if matches!(start, Start::Now) {
             // Later: the answer is closed (its download starts some other time).
             if let Some(k) = fi.take_kept() {
@@ -3114,8 +3160,12 @@ impl App {
             return;
         }
         if ask && self.queue_pick.is_none() {
-            let names = self.queues.iter().map(|q| q.name.clone()).collect();
-            self.queue_pick = Some((ids, dialogs::QueuePick::new(names)));
+            let queues = self
+                .queues
+                .iter()
+                .map(|q| (q.name.clone(), q.sync))
+                .collect();
+            self.queue_pick = Some((ids, dialogs::QueuePick::new(queues)));
         } else {
             self.queues[0].items.extend(ids);
         }
@@ -3563,8 +3613,19 @@ impl App {
             "batch-clipboard" => self.run(Cmd::BatchClipboard, None, ctx),
             "find" => self.run(Cmd::Find, None, ctx),
             "columns" => self.run(Cmd::ColumnsDialog, None, ctx),
-            "scheduler" => self.run(Cmd::Scheduler, None, ctx),
+            // scheduler:files opens it on its main queue's Files in the queue.
+            "scheduler" => {
+                self.run(Cmd::Scheduler, None, ctx);
+                if tab == "files"
+                    && let Some(s) = &mut self.scheduler
+                {
+                    s.show_queue(0, true);
+                }
+            }
             "about" => self.run(Cmd::About, None, ctx),
+            // Mesa's software renderer's window (#476), as View → Draw with opens it.
+            #[cfg(windows)]
+            "software-renderer" => self.run(Cmd::SoftwareRenderer, None, ctx),
             // Update now's end-to-end tests (feature `test-update`, never in a release): Update
             // now pressed in the window `/show updates` opened (against MDM_UPDATE_FEED).
             #[cfg(feature = "test-update")]
@@ -3638,6 +3699,33 @@ impl App {
                     }
                 });
                 self.setup_weighed = true;
+            }
+            // Off-screen test copies: the drop-down `combo-open:<its id>` opens its list on its
+            // next draw (#2008's shots of the lists' icons; nothing is clicked).
+            "combo-open" if crate::offscreen() => {
+                winui::open_combo_for_shot(tab);
+                ctx.request_repaint();
+            }
+            // Add torrent with its magnet box empty, as the toolbar's Add magnet link opens it.
+            "add-magnet" => self.run(Cmd::AddMagnet, None, ctx),
+            // Off-screen test copies: Download later's queue selection panel for the first
+            // download, as Download Later opens it when Options asks for it (#2008's shots).
+            "queue-pick" if crate::offscreen() && first.is_some() => {
+                self.queue_later(first.into_iter().collect(), true);
+            }
+            // Off-screen test copies: Downloads complete's summary of the list's finished and
+            // failed downloads, as a batch's group shows it (#2008's shots of its failed lines).
+            "group-done" if crate::offscreen() => {
+                let of = |s: Status| -> Vec<u64> {
+                    self.items
+                        .iter()
+                        .filter(|i| i.status == s)
+                        .map(|i| i.id)
+                        .collect()
+                };
+                let (finished, failed) = (of(Status::Complete), of(Status::Error));
+                self.summaries
+                    .push(dialogs::GroupDone::new(0, &finished, &failed, &self.items));
             }
             "torrent-settings" => self.run(Cmd::TorrentSettings, None, ctx),
             // The first download's: Add trackers (a torrent), its right-click menu.
@@ -3741,6 +3829,21 @@ impl App {
                         "backwards" => v.show_part("4:10", "1:30", false),
                         "exact" => v.show_part("1:30", "4:10", true),
                         _ => v.show_part("1:30", "4:10", false),
+                    }
+                }
+            }
+            // A sample video whose sound comes in four languages (#1961): `video-dubbed:de` with
+            // that language chosen, `video-dubbed:de:audio only, original m4a` and a choice.
+            "video-dubbed" => {
+                self.run(Cmd::VideoPage, None, ctx);
+                if let Some(v) = &mut self.video_dlg {
+                    v.show_sample_dubbed();
+                    let (lang, choice) = tab.split_once(':').unwrap_or((tab, ""));
+                    if !lang.is_empty() {
+                        v.pick_sound(lang);
+                    }
+                    if !choice.is_empty() {
+                        v.pick(choice);
                     }
                 }
             }
@@ -3941,13 +4044,18 @@ impl App {
                 }
             }
             // Link grabber with a page's links, looked up (the docs' screenshots, #37).
+            // grabber:empty opens it with nothing in it, as when the clipboard held no links.
             "grabber" => {
                 self.show_import(Vec::new(), String::new());
-                if let Some(g) = &mut self.grabber {
+                if tab != "empty"
+                    && let Some(g) = &mut self.grabber
+                {
                     g.sample();
                 }
             }
             "options" => {
+                // options:saveto:Programs: Save to with that category chosen (screenshots).
+                let (tab, category) = tab.split_once(':').unwrap_or((tab, ""));
                 let page = match tab {
                     "types" => 1,
                     "saveto" => 2,
@@ -3966,6 +4074,13 @@ impl App {
                 };
                 self.run(Cmd::Options, None, ctx);
                 self.options = self.options.take().map(|o| o.on_page(page));
+                if !category.is_empty() {
+                    let downloads = self.downloads.clone();
+                    self.options = self
+                        .options
+                        .take()
+                        .map(|o| o.with_category(category, &downloads));
+                }
                 self.raise_options = true;
                 // General → Download panels → Edit... (the video button's settings).
                 if tab == "panels" {
@@ -4127,11 +4242,11 @@ impl App {
         }
         // A magnet link or a .torrent file (browser, command line, file association): Add
         // torrent shows what it holds.
-        if let Some(m) = cmd.url.as_deref().filter(|u| {
-            mdm_torrent::Source::magnet(u).is_some()
-                || (u.to_ascii_lowercase().ends_with(".torrent")
-                    && std::path::Path::new(u.trim_matches('"')).is_file())
-        }) {
+        if let Some(m) = cmd
+            .url
+            .as_deref()
+            .filter(|u| mdm_torrent::Source::magnet(u).is_some() || torrent_file_path(u))
+        {
             let m = m.trim().to_owned();
             self.show_for_dialog(ctx);
             self.open_torrent_dialog(Some(m), ctx);
@@ -4169,16 +4284,26 @@ impl App {
             );
             return;
         }
-        // A Hugging Face repository or folder, a GitHub release or tag (#1772), given on the
-        // command line (`/d`) or dropped alone: its files in Link grabber, as from Add URL. Silent
-        // (`/n`, a script's command line) asks nothing: the address is downloaded as it is.
+        // A Hugging Face repository or folder, a GitHub release or tag (#1772), a Google Drive
+        // folder (#2032), given on the command line (`/d`), dropped alone or sent by the browser
+        // (its right-click command, with its sign-in): its files in Link grabber, as from Add
+        // URL. Silent (`/n`, a script's command line) asks nothing: the address is downloaded as
+        // it is.
         if !cmd.silent
             && cmd.name.is_none()
             && cmd.post.is_none()
             && mdm_engine::hub::Source::of(&url).is_some()
         {
             self.show_for_dialog(ctx);
-            self.grab_package(&url, ctx);
+            let found = crate::transfer::Imported {
+                url: url.to_string(),
+                referer: cmd.referer.clone(),
+                cookies: cmd.cookies.clone(),
+                user_agent: cmd.user_agent.clone(),
+                private: cmd.private,
+                ..Default::default()
+            };
+            self.grab_package(found, ctx);
             return;
         }
         // A fresh address for a download waiting for one (its link expired): that download goes
@@ -4292,7 +4417,9 @@ impl App {
         let given = context.user_agent.as_deref().or(own);
         let mut opts = Options {
             max_connections: self.settings.connections_for(url),
-            proxy: self.settings.proxy_for(context),
+            // A site rule's proxy, else Options' (#1960); the download's own comes after
+            // (`apply_own`). The network adapter holds it either way.
+            proxy: self.settings.download_proxy(url, context),
             dns: self.settings.dns(),
             route: self.route.clone(),
             // Through a debrid account when one takes this host (#44).
@@ -4347,6 +4474,7 @@ impl App {
                 .and_then(|p| url::Url::parse(p).ok()),
             // A site rule: the way a browser connects from the first request (#1778).
             browser_first: site.browser_like,
+            allowed_certs: self.settings.allowed_certs.clone(),
             ..Options::default()
         };
         // A site rule's User-Agent is the user's choice for that site, above the browser's and
@@ -4535,6 +4663,19 @@ impl App {
         })
     }
 
+    /// A download that starts opens its progress window, as Options → Downloads → Customize
+    /// "Download progress" dialog says (#1041), minimized when it says so (#1966).
+    fn progress_window(&mut self, id: u64) {
+        if self.progress.iter().any(|p| p.id == id) {
+            return;
+        }
+        let mut p = Progress::new(id, self.settings.show_complete);
+        if self.settings.show_progress_minimized {
+            p.start_minimized();
+        }
+        self.progress.push(p);
+    }
+
     /// Start or resume a download; `show` opens its progress dialog (IDM's default), unless
     /// Options → Downloads → Customize "Download progress" dialog turned it off (#1041).
     fn start(&mut self, id: u64, show: bool) {
@@ -4613,7 +4754,7 @@ impl App {
             return;
         };
         // The browser's proxy needs its VPN extension's own login (#42): said, never bypassed.
-        if let Some(why) = self.settings.browser_proxy_refused(&context) {
+        if let Some(why) = self.settings.browser_proxy_refused(&url, &context) {
             if let Some(item) = self.item(id) {
                 item.status = Status::Error;
                 item.error = Some(why);
@@ -4643,6 +4784,14 @@ impl App {
         // The file's own remembered limit, else the Speed Limiter's.
         opts.speed_limit = own_limit.or(self.settings.speed_limit());
         opts.checksum = checksum;
+        if let Some(once) = self.once_certs.get(&id) {
+            opts.allowed_certs.extend(once.iter().cloned());
+        }
+        if show {
+            self.interactive_starts.insert(id);
+        } else {
+            self.interactive_starts.remove(&id);
+        }
         let Some(item) = self.item(id) else { return };
         // The file at its place, chosen to be replaced (#1088): replaced as it completes, on a
         // first start and on a resume alike. A place moved since doesn't replace anything.
@@ -4726,9 +4875,8 @@ impl App {
         item.error = None;
         item.last_try = Some(model::now_stamp());
         self.dirty = true;
-        if show && !self.progress.iter().any(|p| p.id == id) {
-            self.progress
-                .push(Progress::new(id, self.settings.show_complete));
+        if show {
+            self.progress_window(id);
         }
     }
 
@@ -6581,6 +6729,7 @@ impl App {
         .with_subs(self.settings.video_subs.clone())
         .with_chapters(self.settings.video_chapters)
         .with_split_chapters(self.settings.video_split_chapters)
+        .with_cover(self.settings.video_cover)
         .with_music_folder(music)
     }
 
@@ -6913,9 +7062,8 @@ impl App {
             self.started_with.insert(id, tool.version.clone());
         }
         self.dirty = true;
-        if show && !self.progress.iter().any(|p| p.id == id) {
-            self.progress
-                .push(Progress::new(id, self.settings.show_complete));
+        if show {
+            self.progress_window(id);
         }
     }
 
@@ -7026,9 +7174,8 @@ impl App {
             self.started_with.insert(id, tool.version.clone());
         }
         self.dirty = true;
-        if show && !self.progress.iter().any(|p| p.id == id) {
-            self.progress
-                .push(Progress::new(id, self.settings.show_complete));
+        if show {
+            self.progress_window(id);
         }
     }
 
@@ -7307,9 +7454,8 @@ impl App {
         item.error = None;
         item.last_try = Some(model::now_stamp());
         self.dirty = true;
-        if show && !self.progress.iter().any(|p| p.id == id) {
-            self.progress
-                .push(Progress::new(id, self.settings.show_complete));
+        if show {
+            self.progress_window(id);
         }
     }
 
@@ -7363,9 +7509,8 @@ impl App {
         item.error = None;
         item.last_try = Some(model::now_stamp());
         self.dirty = true;
-        if show && !self.progress.iter().any(|p| p.id == id) {
-            self.progress
-                .push(Progress::new(id, self.settings.show_complete));
+        if show {
+            self.progress_window(id);
         }
     }
     /// Add torrent → Download Now / Later. Through the debrid account when torrents go there
@@ -7619,9 +7764,8 @@ impl App {
         item.error = None;
         item.last_try = Some(model::now_stamp());
         self.dirty = true;
-        if show && !self.progress.iter().any(|p| p.id == id) {
-            self.progress
-                .push(Progress::new(id, self.settings.show_complete));
+        if show {
+            self.progress_window(id);
         }
     }
 
@@ -8842,7 +8986,14 @@ impl App {
     fn members(&self, now: Instant) -> std::collections::HashMap<u64, Member> {
         self.items
             .iter()
-            .map(|i| (i.id, self.member_of(i, now)))
+            .map(|i| {
+                let m = self.member_of(i, now);
+                // A resting site's downloads (`crate::sitewait`) wait without counting as done.
+                let resting = matches!(m, Member::Waiting | Member::Failed { .. })
+                    && crate::sitewait::site_of(&i.url)
+                        .is_some_and(|s| self.site_waits.resting(&s, now));
+                (i.id, if resting { Member::Held } else { m })
+            })
             .collect()
     }
 
@@ -9233,15 +9384,18 @@ impl App {
             }
             Cmd::Theme(id) => {
                 self.settings.theme = id.to_owned();
-                crate::theme::select(id, ctx);
-                // Live: egui's own visuals, the glyph rendering and the captions follow at once;
-                // every painter reads the new theme from its next frame.
-                crate::theme::apply_theme(ctx);
-                crate::theme::apply_mode(ctx);
-                self.caption_set = false;
-                self.theme_checked = None;
+                // A theme file is read beside the window's thread (#1292), and applied as it is
+                // in (`paint_frame`, `theme::poll_pick`); a built-in at once.
+                if crate::theme::pick(id, ctx) {
+                    // Live: egui's own visuals, the glyph rendering and the captions follow at
+                    // once; every painter reads the new theme from its next frame.
+                    crate::theme::apply_theme(ctx);
+                    crate::theme::apply_mode(ctx);
+                    self.caption_set = false;
+                    self.theme_checked = None;
+                    ctx.request_repaint();
+                }
                 self.dirty = true;
-                ctx.request_repaint();
             }
             Cmd::OpenThemesFolder => {
                 if let Some(dir) = crate::themefile::dir() {
@@ -9318,6 +9472,12 @@ impl App {
                 tracing::info!("draw with {api:?} from the next start");
                 self.settings.renderer = Some(api);
                 self.dirty = true;
+            }
+            #[cfg(windows)]
+            Cmd::SoftwareRenderer => {
+                if self.soft_gl.is_none() {
+                    self.soft_gl = Some(crate::softgl::Offer::looking(&self.rt, ctx));
+                }
             }
             #[cfg(target_os = "linux")]
             Cmd::WindowSystem(pick) => {
@@ -9679,6 +9839,22 @@ impl App {
         failed.extend(self.healed(ctx));
         for id in &finished {
             self.heal_retry.remove(id);
+            self.interactive_starts.remove(id);
+        }
+        for id in &failed {
+            if self.interactive_starts.remove(id)
+                && let Some(item) = self.items.iter().find(|i| i.id == *id)
+                && let Some(mdm_engine::Error::Certificate(refusal)) =
+                    item.snap.as_ref().and_then(|s| s.failure.as_ref())
+                && refusal.problem.can_allow()
+                && let Some(info) = &refusal.info
+            {
+                self.cert_asks.push_back((
+                    *id,
+                    (**info).clone(),
+                    crate::errors::certificate(refusal),
+                ));
+            }
         }
         let now = Instant::now();
         self.check_limits(now);
@@ -9705,6 +9881,20 @@ impl App {
         for id in failed {
             let e = self.failures.entry(id).or_insert((now, 0));
             *e = (now, e.1 + 1);
+            // The site's bot check refused it: the whole site rests (`crate::sitewait`), so a
+            // queue doesn't go on through that site's other files as fast as they are refused.
+            if let Some(site) = self
+                .items
+                .iter()
+                .find(|i| i.id == id && i.refused_by_site)
+                .and_then(|i| crate::sitewait::site_of(&i.url))
+            {
+                let rest = self.site_waits.refused(&site, now);
+                tracing::info!(
+                    "{site}: its bot check refused a download; its downloads wait {} s",
+                    rest.as_secs()
+                );
+            }
             for q in &mut self.queues {
                 queue::requeue_failed(q, id);
             }
@@ -9712,6 +9902,14 @@ impl App {
         for id in &finished {
             self.release_link(*id);
             self.failures.remove(id);
+            if let Some(site) = self
+                .items
+                .iter()
+                .find(|i| i.id == *id)
+                .and_then(|i| crate::sitewait::site_of(&i.url))
+            {
+                self.site_waits.worked(&site);
+            }
             let renaming = self.apply_deferred_rename(*id);
             if !renaming {
                 // Its archive, when it is to be extracted and its last volume is in (#37).
@@ -9733,6 +9931,10 @@ impl App {
             self.dirty = true;
         }
         self.tick_queues();
+        // A resting site's downloads start again when its rest is over, window shown or not.
+        if let Some(end) = self.site_waits.next_end(now) {
+            ctx.request_repaint_after(end - now + Duration::from_millis(250));
+        }
         // A download started early behind a Download File Info stays quiet until the dialog's
         // answer (Start shows its box then; Cancel drops it).
         let early: Vec<u64> = self.file_infos.iter().filter_map(|f| f.early).collect();
@@ -9805,13 +10007,15 @@ impl App {
             self.tests_resumed = true;
             self.tests.resume(&mut self.items, &self.settings);
         }
+        // Whether an archive is complete is looked at beside the window's thread (#1292).
+        self.tests.look_beside(ctx);
         let (tests, items, settings) = (&mut self.tests, &mut self.items, &self.settings);
         let before = finished.len();
         finished.retain(|id| !tests.hold(*id, items, settings));
         if finished.len() != before {
             self.dirty = true;
         }
-        for done in self.tests.poll(&mut self.items, ctx) {
+        for done in self.tests.poll(&mut self.items, &self.settings, ctx) {
             self.dirty = true;
             match done {
                 crate::archtest::Done::Release(id) => finished.push(id),
@@ -10632,12 +10836,20 @@ impl App {
         // The system's API on a software renderer (WARP): said, with why below (no card for
         // it, an OpenGL that can't draw MDM).
         let software = active == Some(gpu) && renderer::software();
+        // Mesa's llvmpipe draws (#476, Windows): said in place of what OpenGL's notes would say.
+        let llvmpipe = renderer::llvmpipe();
         // OpenGL can't draw MDM here (#835, #847): said, and why, where it changed what draws.
         let unfit = renderer::gl_failed().filter(|_| active == Some(gpu) && (software || !on));
         // The software renderer draws because no card here has a driver for the system's API:
         // one line says both (Windows, #847).
         let no_driver = no_driver_note.filter(|_| software && failed == Some(Why::NoAdapter));
-        if active.is_some_and(|a| a != chosen) || software {
+        if llvmpipe {
+            items.push(Sep);
+            // i18n: View → Draw with: a greyed note; what draws the windows: Mesa's software renderer, llvmpipe (keep the name), because no graphics card here has a driver MDM can draw with
+            items.push(off(
+                "Software (llvmpipe): no graphics card here has a driver for MDM",
+            ));
+        } else if active.is_some_and(|a| a != chosen) || software {
             items.push(Sep);
             let mut notes = Vec::new();
             // Since when, and when MDM tries it again (#1205).
@@ -10690,9 +10902,44 @@ impl App {
                 notes.extend(again(renderer::gl_again()));
             }
             items.extend(notes);
+            if software {
+                items.extend(Self::software_renderer_items());
+            }
         }
         // i18n: View menu: submenu choosing what draws MDM's windows: OpenGL, or Direct3D, Vulkan or Metal (graphics systems)
         Sub("Draw with", true, items)
+    }
+
+    /// View → Draw with's lines about Mesa's software renderer (#476, Windows), where Windows'
+    /// software renderer (WARP) draws: its offer while it isn't downloaded, else whether it draws
+    /// from the next start or didn't start here.
+    #[cfg(gpu)]
+    fn software_renderer_items() -> Vec<MenuEntry<Cmd>> {
+        #[cfg(windows)]
+        {
+            use crate::renderer;
+            use MenuEntry::{Item as I, Sep};
+            let off = |label| I(label, Cmd::None, false, false);
+            let mut items = vec![Sep];
+            if renderer::mesa_dll().is_none() {
+                // i18n: View → Draw with: opens a window offering to download Mesa's software renderer (llvmpipe, keep the name), which draws MDM's windows with far less of the processor than Windows' own (WARP)
+                items.push(I(
+                    "Download Mesa's software renderer (llvmpipe)...",
+                    Cmd::SoftwareRenderer,
+                    true,
+                    false,
+                ));
+            } else if renderer::llvmpipe_failed().is_some() {
+                // i18n: View → Draw with: a greyed note; Mesa's software renderer (llvmpipe, keep the name) failed on this computer, so Windows' own software renderer (WARP, keep the name) draws
+                items.push(off("Software (llvmpipe) didn't start here: WARP draws"));
+            } else {
+                // i18n: View → Draw with: a greyed note; Mesa's software renderer (llvmpipe, keep the name) is downloaded and draws the windows from MDM's next start
+                items.push(off("Software (llvmpipe) draws from the next start"));
+            }
+            items
+        }
+        #[cfg(not(windows))]
+        Vec::new()
     }
 
     /// View → Draw with's note under a way that failed here: since when it is passed over, and
@@ -11211,7 +11458,7 @@ impl App {
                                 label: c.label(),
                                 expander: None,
                                 selected: v == cur,
-                                icon: category_icon(c),
+                                icon: c.icon(),
                                 badge: None,
                                 count: None,
                             },
@@ -12812,9 +13059,7 @@ impl App {
             }
         }
         for s in other {
-            let torrent = mdm_torrent::Source::magnet(&s).is_some()
-                || (s.to_ascii_lowercase().ends_with(".torrent")
-                    && std::path::Path::new(&s).is_file());
+            let torrent = mdm_torrent::Source::magnet(&s).is_some() || torrent_file_path(&s);
             if torrent {
                 self.handle_command(
                     ipc::Command {
@@ -13038,13 +13283,11 @@ impl App {
         grabber.add(found, source, |u| known.contains(u.as_str()));
     }
 
-    /// A Hugging Face repository's or a GitHub release's address (#1772) into Link grabber, which
-    /// lists its files through the site's API, and the window to the front.
-    fn grab_package(&mut self, url: &url::Url, ctx: &egui::Context) {
-        let found = vec![crate::transfer::Imported {
-            url: url.to_string(),
-            ..Default::default()
-        }];
+    /// A Hugging Face repository's or a GitHub release's address (#1772), a Google Drive
+    /// folder's (#2032, with the browser's sign-in when it sent it), into Link grabber, which
+    /// lists its files through the site's API or pages, and the window to the front.
+    fn grab_package(&mut self, found: crate::transfer::Imported, ctx: &egui::Context) {
+        let found = vec![found];
         // i18n: Link grabber: where the links came from: an address given on its own (typed or pasted in Add URL, given on the command line)
         let source = crate::i18n::t("Address typed").to_owned();
         self.show_import(found, source);
@@ -13095,6 +13338,7 @@ impl App {
                     dir.join(mdm_engine::naming::sanitize(name))
                 });
                 let checksum = d.checksum.clone();
+                let explicit_name = d.name.is_some();
                 // Numbered on as it starts if the name is taken then (#743): no disk here, for
                 // each of thousands of links.
                 let dest = mdm_engine::naming::guess(&dir, &name);
@@ -13125,8 +13369,9 @@ impl App {
                     if checksum.is_some() {
                         i.checksum = checksum;
                     }
-                    // A name the server didn't give (none looked up) may still change.
-                    if size.is_none() {
+                    // A name the server didn't give (none looked up) may still change, unless
+                    // the list explicitly named it (#1963: an `.ef2` block's `filename:`).
+                    if size.is_none() && !explicit_name {
                         i.name_from_url = true;
                     }
                 }
@@ -13356,6 +13601,8 @@ impl App {
         item.testing = false;
         item.damaged = false;
         item.refetched = false;
+        // So is what its server's checksum said of it (#2064).
+        item.checksum_warning = None;
         item.note(crate::i18n::t("Downloading again from the start"));
         self.tests.forget(&[id]);
         self.dirty = true;
@@ -13597,6 +13844,46 @@ impl App {
         self.dirty = true;
     }
 
+    /// Mesa's software renderer (#476, softgl.rs): offered once, at a start drawn with Windows'
+    /// WARP for want of a graphics card's driver, once MDM's signed list said its size (read in
+    /// the background, only while the automatic update check is on); and its window, from View
+    /// → Draw with too. After the first start's questions, and never on a server.
+    #[cfg(windows)]
+    fn software_renderer_offer(&mut self, ctx: &egui::Context) {
+        if !self.soft_gl_weighed
+            && !self.headless
+            && self.lang_picker.is_none()
+            && self.setup.is_none()
+            && self.settings.language_asked
+            && self.settings.helpers_asked
+        {
+            self.soft_gl_weighed = true;
+            if crate::softgl::worth_offering(&self.settings) {
+                self.soft_gl_lookup = Some(crate::softgl::look_up(&self.rt, ctx));
+            }
+        }
+        let looked = self
+            .soft_gl_lookup
+            .as_ref()
+            .and_then(|s| s.lock().ok().and_then(|mut s| s.take()));
+        if let Some(got) = looked {
+            self.soft_gl_lookup = None;
+            // None for this computer, or the list couldn't be read: no offer at this start.
+            if let Ok(offered) = got
+                && self.soft_gl.is_none()
+            {
+                self.soft_gl = Some(crate::softgl::Offer::offered(&self.rt, offered));
+                self.settings.software_renderer_asked = true;
+                self.dirty = true;
+            }
+        }
+        if let Some(d) = &mut self.soft_gl
+            && !matches!(d.show(ctx), Outcome::Open)
+        {
+            self.soft_gl = None;
+        }
+    }
+
     fn help_dialogs(&mut self, ctx: &egui::Context) {
         if let Some(d) = &mut self.lang_picker {
             let first = !self.settings.language_asked;
@@ -13657,6 +13944,8 @@ impl App {
                 Outcome::Closed => self.extension = None,
             }
         }
+        #[cfg(windows)]
+        self.software_renderer_offer(ctx);
         if let Some(d) = &mut self.about
             && !matches!(d.show(ctx), Outcome::Open)
         {
@@ -13945,7 +14234,11 @@ impl App {
                 // in Link grabber, to tick those wanted.
                 Outcome::Done(new) if mdm_engine::hub::Source::of(&new.url).is_some() => {
                     self.add_url = None;
-                    self.grab_package(&new.url, ctx);
+                    let found = crate::transfer::Imported {
+                        url: new.url.to_string(),
+                        ..Default::default()
+                    };
+                    self.grab_package(found, ctx);
                 }
                 // A video's page, not a file (YouTube, Vimeo…): the video window looks it up.
                 Outcome::Done(new) if mdm_tools::pages::is_video_page(&new.url) => {
@@ -14064,17 +14357,22 @@ impl App {
             Outcome::Open => true,
             Outcome::Closed => false,
             Outcome::Done(h) => {
-                hashes.push((c.id, h));
+                hashes.push((c.id, h, c.matched()));
                 false
             }
         });
-        for (id, h) in hashes {
+        for (id, h, matched) in hashes {
             if let Some(item) = self.item(id) {
                 item.note(crate::i18n::fmt(
                     // i18n: event log entry: the user gave the checksum the file must have
                     crate::i18n::t("Expected checksum set ({algorithm})"),
                     &[("algorithm", h.algo.name())],
                 ));
+                // The user's own check found the file matches: its server's checksum that
+                // didn't is no longer a warning (#2064).
+                if matched {
+                    item.checksum_warning = None;
+                }
                 item.checksum = Some(h);
                 self.dirty = true;
             }
@@ -14366,6 +14664,12 @@ impl App {
                         crate::settings::share_video_settings(&self.settings);
                         self.dirty = true;
                     }
+                    // So is the cover box (#1962).
+                    if self.settings.video_cover != v.cover() {
+                        self.settings.video_cover = v.cover();
+                        crate::settings::share_video_settings(&self.settings);
+                        self.dirty = true;
+                    }
                     self.video_dlg = None;
                     match out {
                         crate::videodlg::VideoOut::One(add) => {
@@ -14470,14 +14774,23 @@ impl App {
                 self.run(Cmd::AddCategory, None, ctx);
             }
             // The folder a download goes to is remembered for the Save As drop list.
-            if matches!(out, Outcome::Done(_))
-                && let Some(dir) = fi.dest().parent()
-            {
-                crate::settings::remember(
-                    &mut self.settings.folder_history,
-                    &dir.display().to_string(),
-                );
-                self.dirty = true;
+            if matches!(out, Outcome::Done(_)) {
+                for cert in &fi.new_allowed_certs {
+                    self.settings.allow_cert(
+                        cert.host.clone(),
+                        cert.port,
+                        cert.sha256.clone(),
+                        cert.problem,
+                    );
+                    self.dirty = true;
+                }
+                if let Some(dir) = fi.dest().parent() {
+                    crate::settings::remember(
+                        &mut self.settings.folder_history,
+                        &dir.display().to_string(),
+                    );
+                    self.dirty = true;
+                }
             }
             // The address was edited after the early start, or "Download through" changed (#44):
             // that download is the old one's. It goes; the new one starts early in its turn
@@ -14524,6 +14837,37 @@ impl App {
         still_open.append(&mut self.file_infos);
         self.file_infos = still_open;
         self.open_waiting_file_infos(ctx);
+        if self.cert_ask.is_none() {
+            self.cert_ask = self.cert_asks.pop_front();
+        }
+        if let Some((id, info, reason)) = self.cert_ask.clone() {
+            match crate::dialogs::cert_warning(ctx, &info, &reason, None) {
+                Outcome::Open => {}
+                Outcome::Done(crate::dialogs::CertChoice::Once) => {
+                    self.cert_ask = None;
+                    self.once_certs
+                        .entry(id)
+                        .or_default()
+                        .push(mdm_engine::AllowedCert {
+                            host: info.host.to_ascii_lowercase(),
+                            port: info.port,
+                            sha256: info.sha256,
+                            problem: info.problem,
+                        });
+                    self.start(id, true);
+                }
+                Outcome::Done(crate::dialogs::CertChoice::Always) => {
+                    self.cert_ask = None;
+                    self.settings
+                        .allow_cert(info.host, info.port, info.sha256, info.problem);
+                    self.dirty = true;
+                    self.start(id, true);
+                }
+                Outcome::Done(crate::dialogs::CertChoice::Cancel) | Outcome::Closed => {
+                    self.cert_ask = None;
+                }
+            }
+        }
         self.finish_stopped();
         let mut actions = Vec::new();
         // A progress window can be hidden in the tray only when there is one to bring it back.
@@ -14910,6 +15254,8 @@ impl App {
             crate::pacfetch::watch_system(&self.rt);
         }
         crate::settings::share_proxy(self.settings.proxy());
+        // The site rules' proxies for the helpers' runs (#1960), as the pages' downloads get them.
+        mdm_tools::proc::set_site_rules(&self.settings.site_rules);
         crate::settings::share_dns(self.settings.dns());
         crate::settings::share_video_settings(&self.settings);
         crate::extractq::share_chosen_7zip(&self.settings.seven_zip_path);
@@ -15033,6 +15379,14 @@ impl App {
         // Mode support is off. Switches live (IDM asks to restart). On Linux the desktop's own
         // change wakes a frame, and the check runs in it rather than at its next 2 s (#156).
         crate::crash::step(crate::crash::Step::Theme);
+        // A theme file picked in View → Theme, read beside the window's thread (#1292).
+        if crate::theme::poll_pick() {
+            crate::theme::apply_theme(&ctx);
+            crate::theme::apply_mode(&ctx);
+            self.caption_set = false;
+            self.theme_checked = None;
+            ctx.request_repaint();
+        }
         let desktop_changed = crate::theme::system_changed();
         if desktop_changed
             || self
@@ -16951,6 +17305,58 @@ mod mark_hook_tests {
             assert_marked(&path, named, None);
         }
     }
+
+    /// #1963: `.ef2` `filename:` lines keep their extension, category, and explicit name (`!name_from_url`)
+    /// when added from Link grabber, while blocks without `filename:` behave as before.
+    #[test]
+    fn ef2_filename_keeps_explicit_name_and_category_when_added() {
+        let mut app = app();
+        let ef2 = "<\r\nhttps://cdn.example.org/1225296974-1-30112.m4s\r\nfilename: 01 - Title.mp4\r\n>\r\n\
+                   <\r\nhttps://cdn.example.org/1225296974-1-30280.m4s\r\nfilename: 01 - Title.m4a\r\n>\r\n\
+                   <\r\nhttps://cdn.example.org/plain.bin\r\n>\r\n";
+        let found = crate::transfer::import(ef2);
+        app.show_import(found.clone(), "list.ef2".into());
+        let picked = crate::grabber::Picked {
+            name: "cdn.example.org".into(),
+            folder: PathBuf::new(),
+            password: None,
+            extract: false,
+            delete: false,
+            links: app
+                .grabber
+                .as_ref()
+                .unwrap()
+                .links
+                .iter()
+                .map(|l| (l.found.clone(), l.name.clone(), l.size))
+                .collect(),
+        };
+        app.add_grabbed(false, vec![picked]);
+
+        assert_eq!(app.items.len(), 3);
+        let mp4 = app
+            .items
+            .iter()
+            .find(|i| i.file_name == "01 - Title.mp4")
+            .expect("explicit mp4 name");
+        assert_eq!(mp4.category, Category::Video);
+        assert!(!mp4.name_from_url);
+
+        let m4a = app
+            .items
+            .iter()
+            .find(|i| i.file_name == "01 - Title.m4a")
+            .expect("explicit m4a name");
+        assert_eq!(m4a.category, Category::Music);
+        assert!(!m4a.name_from_url);
+
+        let plain = app
+            .items
+            .iter()
+            .find(|i| i.file_name == "plain.bin")
+            .expect("fallback name");
+        assert!(plain.name_from_url);
+    }
 }
 
 #[cfg(test)]
@@ -17619,6 +18025,72 @@ mod live_save_tests {
         // Saved already (a second Stop): still saved by hand.
         assert!(halt_saved(saving, saving));
         assert!(!halt_saved(None, None));
+    }
+
+    /// A site whose bot check refused one download rests (`crate::sitewait`): a running queue
+    /// starts none of that site's other files meanwhile, nor retries the refused one, and isn't
+    /// finished while they wait; another site's file starts as usual. When the rest is over, or
+    /// a file of that site finishes, the site's files start again.
+    #[test]
+    fn a_refused_site_rests_and_its_files_wait_in_the_queue() {
+        let address = |n: &str| url::Url::parse(&format!("https://www.host.test/f/{n}")).unwrap();
+        let mut items: Vec<Item> = (1..=3)
+            .map(|id| {
+                let name = format!("part{id}.rar");
+                Item::new(
+                    id,
+                    address(&name),
+                    PathBuf::from(&name),
+                    Category::Compressed,
+                )
+            })
+            .collect();
+        items[0].status = Status::Error;
+        items[1].status = Status::Queued;
+        items[2].status = Status::Queued;
+        let mut other = Item::new(
+            4,
+            url::Url::parse("https://other.test/file.bin").unwrap(),
+            PathBuf::from("file.bin"),
+            Category::General,
+        );
+        other.status = Status::Queued;
+        items.push(other);
+        let mut app = super::start_disk_tests::app_with(items);
+        let now = Instant::now();
+        app.failures.insert(1, (now, 1));
+        assert_eq!(
+            app.site_waits.refused("host.test", now),
+            crate::sitewait::RESTS[0]
+        );
+        let q = Queue {
+            items: vec![1, 2, 3, 4],
+            running: true,
+            files_at_once: 4,
+            ..Queue::new("Main download queue", false)
+        };
+        let later = now + queue::RETRY_DELAY;
+        let members = app.members(later);
+        assert_eq!(
+            queue::to_start(&q, |id| member_in(&members, id), later),
+            [4]
+        );
+        assert!(!queue::finished(&q, |id| member_in(&members, id)));
+        // The rest is over: the site's files start again, the refused one with them.
+        let after = now + crate::sitewait::RESTS[0];
+        let members = app.members(after);
+        assert_eq!(
+            queue::to_start(&q, |id| member_in(&members, id), after),
+            [1, 2, 3, 4]
+        );
+        // A file of that site came through: no rest left.
+        app.site_waits.refused("host.test", after);
+        app.site_waits.worked("host.test");
+        let members = app.members(after);
+        assert_eq!(
+            queue::to_start(&q, |id| member_in(&members, id), after),
+            [1, 2, 3, 4]
+        );
     }
 
     /// A live stream a stop began to save, whose saving failed (its recording left as it was), is
@@ -18728,6 +19200,7 @@ mod redownload_tests {
         row.checksum = Some(mdm_engine::verify::Hash {
             algo: mdm_engine::verify::Algo::Sha256,
             value: vec![0; 32],
+            origin: mdm_engine::verify::Origin::User,
         });
         let mut app = app_with(rt, vec![row]);
         app.redownload(1);
@@ -19941,5 +20414,29 @@ mod stop_and_keep_tests {
             .len();
         assert!(kept > 0);
         assert_eq!(row.size, Some(kept));
+    }
+}
+
+#[cfg(test)]
+mod torrent_path_tests {
+    /// #1292: a .torrent named by its path, told from one on the web by its form alone.
+    #[test]
+    fn a_torrent_file_is_told_by_its_form() {
+        for path in [
+            r"C:\Users\x\Downloads\ubuntu.torrent",
+            r#""D:\a b\linux.TORRENT""#,
+            "/home/x/Downloads/debian.torrent",
+            "debian.torrent",
+        ] {
+            assert!(super::torrent_file_path(path), "{path}");
+        }
+        for not in [
+            "https://example.org/ubuntu.torrent",
+            "ftp://example.org/a.torrent",
+            r"C:\x\ubuntu.iso",
+            "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567",
+        ] {
+            assert!(!super::torrent_file_path(not), "{not}");
+        }
     }
 }

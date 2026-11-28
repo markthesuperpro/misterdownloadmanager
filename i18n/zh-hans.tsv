@@ -163,6 +163,11 @@
 #. {n} = a number (keep the braces as they are)
 #, machine
 @plural	{package}: {n} file left out, its name would lead out of its folder|{package}: {n} files left out, their names would lead out of its folder	{package}：已排除 {n} 个文件，因为其文件名会使路径超出所在文件夹
+#. count in the Link grabber window
+#. Link grabber's Source line: a Google Drive folder's ({package}: its name) items that aren't files to download (Google Forms, shortcuts, Google Sites) are left out; {n} how many
+#. {n} = a number (keep the braces as they are)
+#, machine
+@plural	{package}: {n} item left out, a Google Form, shortcut or Site isn't a file|{package}: {n} items left out, Google Forms, shortcuts and Sites aren't files	{package}：已排除 {n} 个项目（Google 表单、快捷方式和 Google 协作平台不是可下载文件）
 #. count in cnl.rs
 #. Click'n'Load window: {site} is a web site's name such as "example.com"
 #. {site} = a web site's name such as "example.com"; {n} = a number (keep the braces as they are)
@@ -298,6 +303,10 @@
 #. text in rssdlg.rs
 #. RSS feeds window, Download rules: shown when there are no rules yet
 	A rule adds the new articles whose titles it matches, as they come.	规则会在新文章发布时添加标题匹配的文章。
+#. text in the Options window
+#. Site rules window: in the empty list of rules, under its title
+#, machine
+	A rule sets the connections, User-Agent, headers or proxy for one site.	规则为特定站点设置连接、User-Agent、标头或代理。
 #. text in errors.rs
 #. an error: a server on this computer redirected the download to the internet, which would not go through the chosen network adapter; {adapter} its name
 #, machine
@@ -329,6 +338,10 @@
 #. why a split archive (in several files, its volumes) isn't tested yet, in "{name} isn't complete ({why})": one of its files isn't downloaded yet
 #, machine
 	a volume of it isn't there yet	其中一个分卷尚未下载
+#. text in the Download video window
+#. why the thumbnail-as-cover checkbox is greyed in Download video: the choice is the site's sound in a WebM file, which can't hold a picture
+#, machine
+	A WebM file can't hold a cover: choose M4A, MP3, Opus or FLAC	WebM 文件无法包含封面：请选择 M4A、MP3、Opus 或 FLAC
 #. window title in the Help menu's windows (About, updates, shortcuts, Tell a friend)
 	About Mister Download Manager	关于 Mister Download Manager
 #. text in whereis.rs
@@ -389,6 +402,10 @@
 #. message or event log entry in the main window; text in the tray icon's menu
 #. link in the empty download list: opens Add URL
 	Add new download	添加新下载任务
+#. text in the Options window
+#. Options → Accounts: in the empty list of accounts, under its title
+#, machine
+	Add one to download file-host links through it.	添加一个帐户，通过它下载文件托管链接。
 #. text in the Options window
 #, machine
 	Add the duplicate and overwrite the existing file	添加重复项并覆盖现有文件
@@ -511,6 +528,10 @@
 #. Click'n'Load window, under the question: nothing happens to the links before the user adds them in Link grabber
 #, machine
 	Allow only sites you use. Nothing is looked up or downloaded before you add it in Link grabber.	仅允许您使用的网站。在您将链接添加到链接抓取器之前，不会查询或下载任何内容。
+#. text in the Options window; window title in the Options window
+#. window title: HTTPS sites whose certificate the user chose to trust
+#, machine
+	Allowed certificates	允许的证书
 #. text in errors.rs
 #, machine
 	already being downloaded: {path}	正在下载：{path}
@@ -541,6 +562,9 @@
 #. View menu: a check item; dark mode on, whatever the system's setting
 #, machine
 	Always dark	始终深色
+#. button in a dialog box
+#, machine
+	Always for this site	始终为此站点
 #. text in the Options window
 #. Options → Archives: where extracted files go
 	Always into a folder named after it	始终解压到同名文件夹
@@ -552,6 +576,10 @@
 #. text in countries.rs
 #. a country's name (where a download's server is)
 	American Samoa	美属萨摩亚
+#. text in extension.rs
+#. a check of Test browser integration (Windows), one short line: an older registry entry for MDM's helper is in the way of the right one; the entry and where it leads show on the line under it
+#, machine
+	An older registry entry is in the way:	存在旧的注册表项：
 #. text in countries.rs
 #. a country's name (where a download's server is)
 	Andorra	安道尔
@@ -887,6 +915,11 @@
 #. a country's name (where a download's server is)
 	Central African Republic	中非共和国
 #. text in the Options window
+#. column title: SHA-256 certificate fingerprint
+#, machine
+	Certificate (SHA-256)	证书 (SHA-256)
+#. text in a dialog box; text in the Options window
+#. Certificate warning: the certificate's SHA-256 fingerprint
 #. Options → Remote → Status: the certificate's fingerprint, which the phone's browser shows when it warns about it; {fingerprint} = hex digits
 #, machine
 	Certificate (SHA-256): {fingerprint}	证书（SHA-256）：{fingerprint}
@@ -894,6 +927,11 @@
 #. Options → DNS over TLS: label before the name the server's certificate shows
 #, machine
 	Certificate name:	证书名称：
+#. text in the Options window
+#. Options → Sites Logins: button: opens the list of allowed HTTPS site certificates
+#. the trailing ... means it is still going on: keep it
+#, machine
+	Certificates...	证书...
 #. text in countries.rs
 #. a country's name (where a download's server is)
 	Chad	乍得
@@ -942,6 +980,11 @@
 #. event log entry after Recheck: {have} and {total} are sizes ("1.2 GB of 4 GB there")
 #, machine
 	Checked: {have} of {total} there	已检查：{total} 中已有 {have}
+#. text in softgl.rs
+#. the software renderer's window: the download is done, and its files are being checked and unpacked
+#. the trailing ... means it is still going on: keep it
+#, machine
+	Checking and unpacking Mesa's software renderer...	正在检查并解压 Mesa 软件渲染器...
 #. message or event log entry in the main window
 #. event log entry: a torrent's files are being read and checked again (Recheck)
 #, machine
@@ -975,6 +1018,10 @@
 #. Test browser integration, while it reads where browser integration stands (a moment, usually)
 #. the trailing ... means it is still going on: keep it
 	Checking...	正在检查...
+#. text in the download list (sizes, speeds, status)
+#. a download's status: it finished, but the checksum its server announced didn't match its file (the file is kept). Short: the list's Status column is narrow
+#, machine
+	Checksum warning	校验和警告
 #. text in countries.rs
 #. a country's name (where a download's server is)
 	Chile	智利
@@ -985,6 +1032,10 @@
 #. remote control page (on a phone): what the ".torrent file" button does (screen readers)
 #, machine
 	Choose a .torrent file	选择 .torrent 文件
+#. text in rssdlg.rs
+#. RSS feeds window: in the empty list of articles, under its title
+#, machine
+	Choose a feed to see its articles.	选择一个源以查看其文章。
 #. message or event log entry in the main window
 #. title of the file dialog of View → Font → Choose a font file
 #. title of the message when the font picked in View → Font can't be used
@@ -1121,6 +1172,10 @@
 #. window title: a download's own request settings (User-Agent, headers, connections, proxy), from File Properties → Connection...
 #, machine
 	Connection settings	连接设置
+#. text in the Options window
+#. Options → Connection: beside the Site rules... button: what it sets (a User-Agent, request headers, a number of connections, a proxy, each for the sites a rule names)
+#, machine
+	Connection settings by site	按站点设置连接
 #. message or event log entry in the main window
 #. event log: File Properties → Connection settings changed the download's own User-Agent, headers, proxy or connections
 #, machine
@@ -1140,6 +1195,13 @@
 #. text in the Options window
 #, machine
 	Connections:	连接数：
+#. text in a dialog box
+#. Certificate warning: question before Continue once / Always for this site / Cancel
+#, machine
+	Continue anyway?	仍要继续吗？
+#. button in a dialog box
+#, machine
+	Continue once	继续一次
 #. link (opens a web page) in the Help menu's windows (About, updates, shortcuts, Tell a friend)
 	Contributors	贡献者
 #. text in countries.rs
@@ -1386,6 +1448,9 @@
 #. button in the browser extension's window: stop offering it at each start
 #, machine
 	Don't ask again	不再询问
+#. option (radio button) in the Options window
+#, machine
+	Don't show	不显示
 #. text in the Options window
 #. checkbox, Options → Downloads: Download complete and MDM's other windows that open by themselves wait while a full-screen game, app or video, a presentation or the locked screen is on, and show when the user is back
 #, machine
@@ -1520,6 +1585,11 @@
 #. {size} = a file size such as "4.2 MB"; {bytes} = a number of bytes (keep the braces as they are)
 #, machine
 	Downloaded {size} ({bytes} Bytes)	已下载 {size}（{bytes} 字节）
+#. text in the download list (sizes, speeds, status)
+#. a download's status, whole (the Status cell's tip, Properties, the log, Download complete): it finished, but the checksum its server announced didn't match the file, which is kept. "Check it": the user can verify the file against a checksum they trust (right-click → Verify checksum...)
+#. {algorithm} = a checksum algorithm such as "SHA-256" (keep the braces as they are)
+#, machine
+	Downloaded, but the server's {algorithm} checksum didn't match; the file may still be fine. Check it if it matters	已下载，但服务器提供的 {algorithm} 校验和不匹配；文件可能仍然完好。如有需要，请验证文件校验和
 #. item in the Categories tree in the download list; value in a column's filter list in the download list; text in remote.rs
 #. a download's status (state it is in, not a command)
 #, machine
@@ -1552,6 +1622,11 @@
 #. Helpers: MDM's own copy of a helper is being downloaded (where there was none, or in place of the system's); {percent} = how far, a number
 #, machine
 	Downloading MDM's own copy... {percent}%	正在下载 MDM 自己的副本... {percent}%
+#. text in softgl.rs
+#. the software renderer's window, while it downloads; {done} and {size} = sizes (12.0 MB of 66.3 MB)
+#. {size} = a file size such as "4.2 MB" (keep the braces as they are)
+#, machine
+	Downloading Mesa's software renderer: {done} of {size}	正在下载 Mesa 软件渲染器：{done} / {size}
 #. text in archtest.rs
 #. in a download's log: after its archive test found damaged files, only their bytes are downloaded again from the same server; {size} like "1.20 MB"
 #. {size} = a file size such as "4.2 MB" (keep the braces as they are)
@@ -1569,6 +1644,10 @@
 #. tab title: download settings
 #, machine
 	Downloads	下载
+#. text in the Scheduler window
+#. Scheduler → Files in the queue: in the empty list, under its title
+#, machine
+	Downloads added to this queue show here.	添加到此队列的下载会显示在此处。
 #. window title in a dialog box
 #. title of the window that sums up downloads added together (a playlist, a batch) once all are done
 #, machine
@@ -1638,6 +1717,10 @@
 #. Link grabber, in the empty "Save to" box: each file goes to its category's folder (Options → Save to)
 #, machine
 	Each file's category folder	每个文件所属类别的文件夹
+#. text in the Options window
+#. Options → Regional → Videos' sound: the first choice, each video's own sound (the language it was made in), the default
+#, machine
+	Each video's original	每个视频的原始音轨
 #. text in countries.rs
 #. a country's name (where a download's server is)
 	Ecuador	厄瓜多尔
@@ -1720,7 +1803,6 @@
 #. a country's name (where a download's server is)
 	Eritrea	厄立特里亚
 #. text in a dialog box; item in the Categories tree in the download list; value in a column's filter list in the download list; text in the download list (sizes, speeds, status); text in a download's progress window; text in remote.rs
-#. in Download File Info, where the size goes: the address didn't answer
 #. a download's status (state it is in, not a command)
 #. a download's status (state it is in, not a command): it failed
 #, machine
@@ -1787,6 +1869,10 @@
 #. Options → Accounts: a note that the debrid services' support (Real-Debrid, AllDebrid, Premiumize) is new and not yet tried with real paid accounts
 #, machine
 	Experimental: built from the services' public API documentation, not yet confirmed with real accounts.	实验性：根据服务的公开 API 文档构建，尚未用真实账户验证。
+#. text in the Options window
+#. Allowed certificates table: short reason label
+#, machine
+	Expired	已过期
 #. message or event log entry in the main window; text in the Options window
 #, machine
 	Export	导出
@@ -2032,6 +2118,10 @@
 #. {address} = an example web address with a * in the file name
 #, machine
 	For example:  {address}	例如：{address}
+#. text in the Options window
+#. Options → Regional → Videos' sound: a note under the language list
+#, machine
+	For videos whose sound comes in several languages (dubbed ones), and playlists. A video without it keeps its original sound.	适用于包含多种语言音轨（配音）的视频和播放列表。没有多种语言音轨的视频将保留原始音频。
 #. text in the Add torrent window
 #. Torrent settings, under the switch that makes MDM open magnet links and .torrent files (macOS, Linux)
 #, machine
@@ -2519,6 +2609,10 @@
 #. text in countries.rs
 #. a country's name (where a download's server is)
 	Italy	意大利
+#. text in rssdlg.rs
+#. RSS feeds window: in the empty list of articles of a feed not read yet
+#, machine
+	Its articles show here once the feed is read.	读取源后，其文章会显示在此处。
 #. text in extracting archives (a download's log, the Archive password window)
 #. why an archive wasn't extracted in place (after "Couldn't extract {name}: "); HatchZip took its files out (the archive is gone), but moving them stopped: {to} holds those moved, {left} the others, {error} the system's reason
 #. {error} = an error message (keep the braces as they are)
@@ -2822,6 +2916,11 @@
 #. the trailing ... means it is still going on: keep it
 #, machine
 	Looking the page up...	正在查找页面...
+#. text in softgl.rs
+#. the software renderer's window: while MDM reads its signed list of the software renderers it may download (Mesa's llvmpipe: it draws MDM's windows where there is no graphics card)
+#. the trailing ... means it is still going on: keep it
+#, machine
+	Looking up Mesa's software renderer...	正在查找 Mesa 软件渲染器...
 #. text in preview.rs
 #. the preview pane: still looking whether the file is there
 #. the trailing ... means it is still going on: keep it
@@ -2975,6 +3074,9 @@
 #. Video helpers: MDM can't download Node.js on this system (an unusual processor); Node.js and Deno are program names; "Use another program" is the button below
 #, machine
 	MDM has no copy for this system: install Node.js or Deno, or use another program	MDM 没有适用于此系统的副本：请安装 Node.js 或 Deno，或使用其他程序
+#. text in softgl.rs
+#, machine
+	MDM has no data folder	MDM 没有数据文件夹
 #. text in remote.rs
 #. remote control page (on a phone): no pairing code is shown in MDM; "Pair a device" is MDM's button
 #, machine
@@ -3000,6 +3102,27 @@
 #. error installing ffmpeg: the list of builds MDM accepts doesn't carry MDM's own signature
 #, machine
 	MDM's list of checked ffmpeg builds isn't signed by MDM's key, so ffmpeg wasn't installed	MDM 检查过的 ffmpeg 构建列表未由 MDM 的密钥签名，因此未安装 ffmpeg
+#. text in errors.rs
+#. error installing Mesa's software renderer: the list of builds MDM accepts couldn't be read; {detail} = the technical detail, in English
+#, machine
+	MDM's list of checked software renderers can't be read ({detail})	无法读取 MDM 检查过的软件渲染器列表：{detail}
+#. text in errors.rs
+#. error installing Mesa's software renderer (it draws MDM's windows where there is no graphics card): MDM installs only builds named in a list it publishes, signed with its key, and that list couldn't be downloaded; {error} = why
+#. {error} = an error message (keep the braces as they are)
+#, machine
+	MDM's list of checked software renderers could not be downloaded: {error}	无法下载 MDM 检查过的软件渲染器列表：{error}
+#. text in errors.rs
+#. error installing Mesa's software renderer: the list of builds MDM accepts has none for this computer's system and processor
+#, machine
+	MDM's list of checked software renderers has none for this computer	MDM 检查过的软件渲染器列表中没有适用于此计算机的系统和处理器的版本
+#. text in errors.rs
+#. error installing Mesa's software renderer: the list of builds MDM accepts is older than one this copy of MDM already used (it never goes back to an older list)
+#, machine
+	MDM's list of checked software renderers is older than one already used, so nothing was installed	MDM 检查过的软件渲染器列表版本低于已使用的版本，因此未安装任何内容
+#. text in errors.rs
+#. error installing Mesa's software renderer: the list of builds MDM accepts doesn't carry MDM's own signature
+#, machine
+	MDM's list of checked software renderers isn't signed by MDM's key, so nothing was installed	MDM 检查过的软件渲染器列表未由 MDM 密钥签名，因此未安装任何内容
 #. text in whereis.rs
 #. how far a download's server is, by its round trip (60 to 150 ms)
 #, machine
@@ -3017,6 +3140,14 @@
 #. a video's status while its picture and sound are joined into one file (ffmpeg); {percent} how far, e.g. "45%"
 #, machine
 	Merging... ({percent})	正在合并... ({percent})
+#. text in softgl.rs
+#. the software renderer's window: the download or its check failed; {reason} = why, a sentence's part
+#, machine
+	Mesa's software renderer couldn't be installed: {reason}	无法安装 Mesa 软件渲染器：{reason}
+#. text in softgl.rs
+#. the software renderer's window, once Mesa's llvmpipe is downloaded and checked
+#, machine
+	Mesa's software renderer is installed. MDM draws with it from its next start.	Mesa 软件渲染器已安装。MDM 将在下次启动时使用它进行绘制。
 #. text in countries.rs
 #. a country's name (where a download's server is)
 	Mexico	墨西哥
@@ -3031,6 +3162,9 @@
 #. checkbox: the Minimize button hides MDM's windows to the notification area (system tray) instead of the taskbar
 #, machine
 	Minimize to the notification area	最小化到通知区域
+#. text in the Options window
+#, machine
+	Minimized, the window waits on the taskbar and doesn't take the focus.	窗口最小化后在任务栏等待，不获取焦点。
 #. text in rssdlg.rs; text in the Add torrent window
 #. RSS feeds window: the unit after the minutes box
 #. Torrent settings: the unit after the minutes box
@@ -3260,6 +3394,10 @@
 #. Link grabber, a link's status: the server wants a login (401, 403)
 #, machine
 	Needs a login	需要登录
+#. text in the Link grabber window
+#. Link grabber, a link's status: a Google Drive folder that isn't shared with everyone needs the browser's Google sign-in. The sentence is the cell's hover tip
+#, machine
+	Needs a sign-in	需要登录
 #. text in countries.rs
 #. a country's name (where a download's server is)
 	Nepal	尼泊尔
@@ -3332,6 +3470,10 @@
 #. button in a dialog box; text in a download's progress window
 #, machine
 	No	否
+#. text in the Options window
+#. Options → Accounts: the title in the empty list of debrid service accounts
+#, machine
+	No accounts yet	暂无帐户
 #. text in a dialog box
 #, machine
 	No addresses yet	尚无地址
@@ -3339,6 +3481,10 @@
 #. Options → Proxy / Socks: Test got no answer in time
 #, machine
 	No answer within 20 seconds.	20 秒内无响应。
+#. text in rssdlg.rs
+#. RSS feeds window: the title in the empty list of articles of a feed that has none
+#, machine
+	No articles	暂无文章
 #. text in extension.rs
 #. a check of Test browser integration (Linux, macOS): MDM found no browser it can connect to (one installed as a Flatpak isn't found)
 #, machine
@@ -3386,12 +3532,29 @@
 #. title in the empty download list when there are no downloads at all
 #, machine
 	No downloads yet	尚无下载任务
+#. text in rssdlg.rs
+#. RSS feeds window: the title in the empty list of articles, no feed chosen
+#, machine
+	No feed chosen	未选择源
+#. text in rssdlg.rs
+#. RSS feeds window: the title in the empty list of feeds
+#, machine
+	No feeds yet	暂无源
+#. text in the Scheduler window
+#. Scheduler → Files in the queue: the title in the empty list
+#, machine
+	No files in this queue	此队列中没有文件
 #. text in a dialog box
 #, machine
 	No folders yet	尚无文件夹
 #. text in a dialog box
 #, machine
 	No goes back, to choose another folder.	点击“否”可返回选择其他文件夹。
+#. text in softgl.rs
+#. the software renderer's window, offered once at a start where Windows' own software renderer (WARP, keep the name) draws MDM because no graphics card has a driver for it; llvmpipe (keep the name) is Mesa's software renderer; {size} = its download's size (e.g. 66.3 MB)
+#. {size} = a file size such as "4.2 MB" (keep the braces as they are)
+#, machine
+	No graphics card here has a driver MDM can draw with, so Windows' software renderer (WARP) draws its windows and keeps the processor busy. Mesa's software renderer (llvmpipe) draws them with far less. Download it once ({size}, from Mesa's builds on GitHub)? MDM draws with it from its next start.	此计算机没有 MDM 可用于绘制的显卡驱动程序，因此 Windows 软件渲染器 (WARP) 绘制其窗口并占用处理器。Mesa 软件渲染器 (llvmpipe) 绘制窗口时占用资源少得多。要下载它吗（{size}，来自 GitHub 上的 Mesa 版本）？MDM 将在下次启动时使用它进行绘制。
 #. tooltip (why a control is greyed) in langpick.rs
 #. tooltip of the greyed OK button in the language picker
 #, machine
@@ -3399,6 +3562,10 @@
 #. text in langpick.rs
 #, machine
 	No language matches.	无匹配语言。
+#. text in the Link grabber window
+#. Link grabber: the title in its empty list
+#, machine
+	No links yet	暂无链接
 #. text in the Options window
 #. Options → Remote → Status: on, but the computer has no local network address now
 #, machine
@@ -3430,9 +3597,17 @@
 #, machine
 	No proxy/socks	无代理/SOCKS
 #. text in the Options window
+#. Site rules window: the title in the empty list of rules
+#, machine
+	No site rules yet	暂无站点规则
+#. text in the Options window
 #. Options → Accounts: no system keyring/keychain answered (none runs, e.g. a desktop without one), so the sign-ins stay in MDM's settings folder, which only the user's account may read
 #, machine
 	No system keyring answered, so sign-ins and passwords are kept in MDM's settings, which only you can read.	系统密钥环无响应，因此登录信息和密码保存在 MDM 的设置中，只有您可以读取。
+#. text in the Add torrent window
+#. Add torrent: the title in the empty list of files, before a torrent is read
+#, machine
+	No torrent yet	暂无种子
 #. message or event log entry in the main window
 #. event log entry: Add trackers changed nothing, the torrent had them all
 #, machine
@@ -3546,8 +3721,16 @@
 #, machine
 	Not tested: it is larger than {limit} (Options → Archives). Right-click → Test archive tests it	未测试：它大于 {limit}（选项 → 存档）。右键单击 → 测试存档可测试它
 #. text in the Options window
+#. Allowed certificates table: short reason label
+#, machine
+	Not trusted	不受信任
+#. text in the Options window
 #, machine
 	Not used: file parts are written next to the file	未使用：文件分块直接写在文件旁边
+#. text in the Options window
+#. Allowed certificates table: short reason label
+#, machine
+	Not yet valid	尚未生效
 #. text in a dialog box
 #. \\n starts a new line: break lines where they fit the translation
 #, machine
@@ -3666,6 +3849,10 @@
 #. the Scheduler, under "Wake the computer to run this queue" (Linux): the computer's wake alarm can be set by an administrator only
 #, machine
 	Only an administrator can allow this	只有管理员才能允许此操作
+#. text in the Download video window
+#. why the thumbnail-as-cover checkbox is greyed in Download video: the choice is a video, which is saved as it is
+#, machine
+	Only an audio file gets a cover: a video is saved as it is	只有音频文件才能添加封面：视频将按原样保存
 #. tooltip (why a control is greyed) in the Download video window
 #. why "Put them into the video" is greyed: the chosen file type can't hold subtitles
 #, machine
@@ -3766,6 +3953,9 @@
 #. Options → Add an account: label before the field for the service's API token (the other way to sign in)
 #, machine
 	Or paste your API token:	或粘贴您的 API 令牌：
+#. text in the Options window
+#, machine
+	Other	其他
 #. text in the Link grabber window
 #. Link grabber: the box that edits the selected package
 #, machine
@@ -3827,12 +4017,14 @@
 #. text in the Batch download window; text in a dialog box; label in the Options window; text in the Options window; text in a download's Properties window
 #, machine
 	Password	密码
-#. text in the Link grabber window; text in the Options window
+#. text in the Link grabber window; text in the Options window; text in requestedit.rs
 #. Link grabber: the package's archives' password (a label before its box)
 #. Options → Add an account: label before the field for the password at the debrid service
+#. Site rule: label before the proxy's password, beside its user name
 #, machine
 	Password:	密码：
 #. text in the Add torrent window
+#. "Look up" is the button that reads the torrent: use its translation
 #, machine
 	Paste a magnet link or choose a .torrent file, then Look up.	粘贴磁力链接或选择 .torrent 文件，然后点击“查找”。
 #. text in the Link grabber window
@@ -3964,6 +4156,10 @@
 #. text in a download's progress window
 #, machine
 	Property	属性
+#. text in the Options window
+#. Site rules: column title: the rule's proxy (empty: the one in Options → Proxy / Socks; "No proxy"; or its address)
+#, machine
+	Proxy	代理
 #. text in errors.rs; text in the Options window
 #. tab title
 #, machine
@@ -3979,6 +4175,10 @@
 #, machine
 	Proxy server address	代理服务器地址
 #. text in requestedit.rs
+#. Site rule: label before the proxy's user name (its login), under the proxy's address
+#, machine
+	Proxy user:	代理用户：
+#. text in requestedit.rs
 #. Site rule / a download's Connection settings: label before the proxy choice
 #, machine
 	Proxy:	代理：
@@ -3989,6 +4189,10 @@
 #. why Batch download's OK is greyed
 #, machine
 	Put a * in the address where the numbers or letters go	在地址中数字或字母的位置填入 *
+#. text in the Download video window
+#. checkbox in Download video: the picture the site shows for the video (its thumbnail) goes into an audio-only download (MP3, M4A, Opus, FLAC) as its cover, which music players show
+#, machine
+	Put the video's thumbnail in the audio file as its cover	将视频缩略图作为封面放入音频文件
 #. checkbox in the Download video window
 #. checkbox in Download video: subtitles go inside the video file instead of a separate .srt file beside it
 #, machine
@@ -4058,6 +4262,10 @@
 #. {error} = an error message (keep the braces as they are)
 #, machine
 	Reannounce failed: {error}	重新汇报失败：{error}
+#. text in the Options window
+#. column title: certificate refusal reason allowed
+#, machine
+	Reason	原因
 #. text in a download's progress window
 #. column title: how much came from the peer
 #, machine
@@ -4313,6 +4521,10 @@
 #. text in the Batch download window
 #, machine
 	Second file:	第二个文件：
+#. text in a dialog box
+#. window title when a server's HTTPS certificate is refused
+#, machine
+	Security Alert	安全警报
 #. text in preview.rs
 #. the preview pane when no download is selected, under its title
 #, machine
@@ -4488,7 +4700,7 @@
 #. checkbox in the Options window; checkbox in a download's progress window
 #, machine
 	Show download complete dialog	显示下载完成对话框
-#. checkbox in the Options window
+#. text in the Options window
 #, machine
 	Show download progress dialog when a download starts	下载开始时显示下载进度对话框
 #. text in the Options window
@@ -4503,6 +4715,12 @@
 #. button in the browser extension's window: open the tutorial that adds the extension
 #, machine
 	Show me how	查看教程
+#. option (radio button) in the Options window
+#, machine
+	Show minimized	最小化显示
+#. option (radio button) in the Options window
+#, machine
+	Show normally	正常显示
 #. what a keyboard shortcut does in the Help menu's windows (About, updates, shortcuts, Tell a friend)
 #, machine
 	Show or hide the preview pane	显示或隐藏预览窗格
@@ -4592,6 +4810,7 @@
 	Sint Maarten	圣马丁岛
 #. text in the Options window
 #. Site rules: column title: the site pattern
+#. column title: site name and port
 #, machine
 	Site	站点
 #. checkbox in the Find window
@@ -4618,6 +4837,11 @@
 #. Site rule: label before the site pattern box (example.com, *.example.com)
 #, machine
 	Site:	站点：
+#. text in a dialog box
+#. Certificate warning: the site whose certificate was refused; {site} = host or host:port
+#. {site} = a web site's name such as "example.com" (keep the braces as they are)
+#, machine
+	Site: {site}	站点：{site}
 #. text in the Options window
 #. tab title: user names and passwords for sites
 #, machine
@@ -4628,6 +4852,14 @@
 #. text in helpers.rs
 #, machine
 	Sites send their best quality as separate video and audio. ffmpeg puts them together into one file that plays anywhere.	网站以独立的视频和音频发送最高画质。ffmpeg 将它们合并成一个可在任何设备上播放的文件。
+#. text in the Options window
+#. Options → Sites Logins: beside the Certificates... button
+#, machine
+	Sites whose certificate you chose to trust	您选择信任其证书的站点
+#. text in the Options window
+#. Allowed certificates window: explanation
+#, machine
+	Sites whose security certificate you chose to trust. Each entry is pinned to that certificate's SHA-256 fingerprint.	您选择信任其安全证书的站点。每个条目都固定到该证书的 SHA-256 指纹。
 #. text in the Link grabber window; text in a download's progress window; text in the Scheduler window; text in the Add torrent window
 #. column title: the file's size
 #. column title: file size
@@ -4659,6 +4891,10 @@
 #. button in the Download complete window: opens a menu of how long no Download complete window shows (30 minutes, 1 hour...)
 #, machine
 	Snooze	暂停通知
+#. text in softgl.rs
+#. the window's title: Mesa's software renderer, offered where no graphics card draws MDM's windows
+#, machine
+	Software renderer	软件渲染器
 #. text in countries.rs
 #. a country's name (where a download's server is)
 	Solomon Islands	所罗门群岛
@@ -4676,9 +4912,17 @@
 #. text in a dialog box
 #, machine
 	Some of the torrent's files are already in this folder:	此文件夹中已存在种子的部分文件：
+#. text in the Download video window
+#. label in Download video before the list of the languages a video's sound comes in (its original and the dubbed ones)
+#, machine
+	Sound	音轨
 #. text in the Options window
 #, machine
 	Sound file	声音文件
+#. text in the Options window
+#. Options → Regional → Videos' sound: label before the list of languages
+#, machine
+	Sound language:	声音语言:
 #. page title in the Options window
 #, machine
 	Sound settings	声音设置
@@ -5074,6 +5318,10 @@
 #. a check of Test browser integration: the browsers find MDM's helper program
 #, machine
 	The browsers can find Mister Download Manager	浏览器可以找到 Mister Download Manager
+#. text in extension.rs
+#. under "An older registry entry is in the way" (Test browser integration, Windows): the entry is in the part of the registry 32-bit programs use, which the browsers read before the right entry; it leads to another copy of MDM or to one that was deleted; then what the Set it up button does about it
+#, machine
+	The browsers read it before the right one, and it leads to another copy of Mister Download Manager or to one that is gone. Set it up gives your account an entry of its own, which the browsers read first.	浏览器会在正确的注册表项之前读取它，并且它指向另一个 Mister Download Manager 副本或已删除的副本。“设置”会为您的帐户创建一个自己的注册表项，浏览器会优先读取该项。
 #. text in the Options window
 #. Options → Remote → Status: the settings were changed; they apply on OK
 #, machine
@@ -5182,6 +5430,10 @@
 #. text in errors.rs
 #, machine
 	the downloaded program doesn't match its signed checksum	下载的程序与其签名校验和不匹配
+#. text in errors.rs
+#. error installing Mesa's software renderer: a file downloaded isn't the one named in the list of builds MDM accepts (its checksum differs), so it was thrown away
+#, machine
+	the downloaded software renderer isn't the build MDM's list of checked builds names, so it wasn't installed	下载的软件渲染器与 MDM 检查过的版本列表中指定的版本不符，因此未安装
 #. message or event log entry in the main window
 #. in the empty download list, under its title
 #, machine
@@ -5302,6 +5554,10 @@
 #. why a download failed (#1102): the folder and file name together are longer than Windows allows ({limit} characters, 259), counting the temporary files saved beside the file while it downloads (their names are longer). {path} = the path
 #, machine
 	the path is too long for Windows: at most {limit} characters with the files saved while it downloads. Choose a shorter file name or folder ({path})	Windows 路径过长：下载时保存的文件最多 {limit} 个字符。请选择较短的文件名或文件夹 ({path})
+#. text in requestedit.rs
+#. Site rule: the proxy's user name or password holds a control character (a line break, a tab)
+#, machine
+	The proxy's user name and password can't hold line breaks or tabs	代理用户名和密码不能包含换行符或制表符
 #. text in the Help menu's windows (About, updates, shortcuts, Tell a friend)
 #. why updates could not be checked: the newest release on the site has no number
 #, machine
@@ -5409,6 +5665,9 @@
 #, machine
 	The site's certificate isn't trusted, by yt-dlp nor by this computer: an antivirus's web filter or a proxy that reads HTTPS may be in the way. Turn its HTTPS scanning off, or add its certificate to the computer's, then look the page up again.	yt-dlp 和此计算机均不信任该网站的证书：可能是防病毒软件的网络筛选器或读取 HTTPS 的代理在阻止。请关闭其 HTTPS 扫描，或将其证书添加到计算机中，然后重新查找该页面。
 #. text in errors.rs
+#, machine
+	the site's security certificate expired on {date}, so MDM can't be sure it's the real site (your browser warns about it too)	该站点的安全证书于 {date} 过期，因此 MDM 无法确定它是真实站点（您的浏览器也会发出警告）
+#. text in errors.rs
 #. why a download failed: the site's security certificate (what proves a secure, HTTPS, site is the one it says) is past its end date. Browsers warn about the same site
 #, machine
 	the site's security certificate has expired, so MDM can't be sure it's the real site (your browser warns about it too)	网站的安全证书已过期，MDM 无法确定这是否是真实网站（您的浏览器也会发出警告）
@@ -5416,6 +5675,10 @@
 #. why a download failed: the site's security certificate was made for other site names than the one in the address
 #, machine
 	the site's security certificate is for another site name, so MDM can't be sure it's the real site (your browser warns about it too)	网站的安全证书适用于其他网站名称，MDM 无法确定这是否是真实网站（您的浏览器也会发出警告）
+#. text in errors.rs
+#. why a download failed: the site's security certificate is self-signed
+#, machine
+	the site's security certificate is self-signed, so MDM can't be sure it's the real site (your browser warns about it too)	该站点的安全证书是自签名的，因此 MDM 无法确定它是真实站点（您的浏览器也会发出警告）
 #. text in errors.rs
 #. why a download failed: the site's security certificate is made for other uses than a website (its "extended key usage" leaves out web servers)
 #, machine
@@ -5585,6 +5848,10 @@
 #. remote control page (on a phone): label of the box naming this phone (shown in MDM's list of paired devices)
 #, machine
 	This device's name	此设备名称
+#. text in rssdlg.rs
+#. RSS feeds window: in the empty list of articles of a feed that has none
+#, machine
+	This feed has no articles right now.	此源目前没有文章。
 #. message or event log entry in the main window
 #. the message when a file picked in View → Font isn't a TrueType or OpenType font MDM can read
 #, machine
@@ -5625,6 +5892,10 @@
 #. a download's error: a Google Drive file that isn't shared with everyone
 #, machine
 	this Google Drive file needs you to sign in: sign in to Google in your browser, then download it from there	此 Google 云端硬盘文件需要登录：请在浏览器中登录 Google，然后从浏览器下载
+#. text in the Link grabber window
+#. Link grabber, the hover tip of a Google Drive folder's status: the folder isn't shared with everyone; how to send it with the browser's sign-in (the browser's right-click command, keep its name as the browser extension shows it)
+#, machine
+	This Google Drive folder needs you to sign in: sign in to Google in your browser, then right-click the folder's link there and choose Download with Mister Download Manager.	此 Google 云端硬盘文件夹需要您登录：请在浏览器中登录 Google，然后右键单击该文件夹的链接并选择“使用 Mister Download Manager 下载”。
 #. text in errors.rs
 #. a download's error: the address is a Google Drive folder, which isn't one file
 #, machine
@@ -5980,6 +6251,10 @@
 #. a download's Connection settings: the proxy typed isn't an address MDM takes; the examples stay as they are
 #, machine
 	Type the proxy as host:port, http://host:port or socks5://host:port	请将代理输入为 host:port、http://host:port 或 socks5://host:port
+#. text in requestedit.rs
+#. Site rule: a password was typed for the proxy, but no user name
+#, machine
+	Type the proxy's user name too, or leave its password empty	请同时输入代理用户名，或将密码留空
 #. text in the Scheduler window
 #. why OK is greyed when naming a new queue
 #, machine
@@ -6184,10 +6459,6 @@
 #. text in the Options window
 #, machine
 	User-Agent for manually added downloads:	手动添加下载任务的用户代理：
-#. text in the Options window
-#. Options → Connection: beside the Site rules... button: what it sets
-#, machine
-	User-Agent, headers and connections by site	按站点设置 User-Agent、标头和连接
 #. text in requestedit.rs
 #. Site rule / a download's Connection settings: label before the User-Agent box (the name the browser or program gives itself to sites)
 #, machine
@@ -6266,6 +6537,10 @@
 #. what a screen reader calls the list of a playlist's videos
 #, machine
 	Videos	视频
+#. group box title in the Options window
+#. Options → Regional: group box title: the language of a video's sound, for videos that come with several (dubbed ones)
+#, machine
+	Videos' sound	视频音轨
 #. text in countries.rs
 #. a country's name (where a download's server is)
 	Vietnam	越南
@@ -6426,6 +6701,10 @@
 #. {n} = a number (keep the braces as they are)
 #, machine
 	Wrong code. Tries left: {n}	配对码错误。剩余尝试次数：{n}
+#. text in the Options window
+#. Allowed certificates table: short reason label
+#, machine
+	Wrong name	名称错误
 #. text in extracting archives (a download's log, the Archive password window)
 #. in Archive password: {name} is the archive's file name
 #. {name} = a file name (keep the braces as they are)
@@ -6675,6 +6954,11 @@
 #. said after Delete with files when some files stayed on the disk; {file} is the download's name; the files' paths follow it
 #, machine
 	{file}: these files stayed on the disk, because MDM didn't create them or another download uses them:	{file}：这些文件保留在磁盘上，因为 MDM 未创建它们或另一个下载正在使用它们：
+#. text in the Link grabber window
+#. Link grabber's Source line: a Google Drive folder ({folder}: its name) in which a folder showed the most items Drive's page lists ({n}: 50), so it may hold more than are listed; what gets them all (Drive's own Download button, which makes a zip)
+#. {n} = a number (keep the braces as they are)
+#, machine
+	{folder}: Google Drive's page lists only the first {n} items of a folder, so some may be missing; Drive's own Download gets the whole folder as a zip	{folder}：Google 云端硬盘页面仅列出文件夹中的前 {n} 个项目，因此可能会遗漏一些项目；使用云端硬盘自带的“下载”功能可将整个文件夹下载为 zip 文件
 #. message or event log entry in the main window; text in the Link grabber window
 #. Link grabber's Source line, after where the links came from: a folder (an FTP folder, a web server's "Index of" page) held more files or subfolders than Link grabber lists; {folder} is its name, {n} how many of its files are listed (10,000)
 #. {n} = a number (keep the braces as they are)
@@ -6728,9 +7012,17 @@
 #, machine
 	{ip} can't be reached through {adapter}: it has no address of that kind (IPv4 or IPv6)	无法通过 {adapter} 访问 {ip}：该适配器没有此类地址（IPv4 或 IPv6）
 #. text in the Download video window
+#. in Download video's Sound list: a language's sound track that describes the picture for people who can't see it; {language} is the language's name
+#, machine
+	{language}, audio description	{language}，音频描述
+#. text in the Download video window
 #. in the Subtitles list of Download video: {language} = a language's name; the site made these subtitles automatically (speech recognition)
 #, machine
 	{language}, automatic	{language}，自动生成
+#. text in the Download video window
+#. in Download video's Sound list and the browser's video menu: the video's own sound, the language it was made in (the others are dubbed); {language} is the language's name
+#, machine
+	{language}, original	{language}，原声
 #. text in a download's progress window
 #. {live} = peers connected now; {known} = peers heard of
 #, machine
@@ -6930,10 +7222,20 @@
 #, machine
 	{site} didn't give the file this time: try again in a moment	{site} 这次没有提供文件：请稍后再试
 #. text in the Link grabber window
+#. Link grabber, the hover tip of a Google Drive folder's status ({site}: "Google Drive"): no folder at this link, or one the signed-in account may not open
+#. {site} = a web site's name such as "example.com" (keep the braces as they are)
+#, machine
+	{site} has no such folder, or it isn't shared with you.	{site} 中没有此文件夹，或者您无权访问。
+#. text in the Link grabber window
 #. Link grabber, the hover tip of a Hugging Face repository's or GitHub release's status; {site} is "Hugging Face" or "GitHub"
 #. {site} = a web site's name such as "example.com" (keep the braces as they are)
 #, machine
 	{site} has no such repository, folder, release or tag, or it is private.	{site} 没有此存储库、文件夹、发布或标签，或者它是私有的。
+#. text in the Link grabber window
+#. Link grabber, a Google Drive folder's status (the cell's hover tip): Drive ({site}: "Google Drive") answered that it gets too many requests from this computer
+#. {site} = a web site's name such as "example.com" (keep the braces as they are)
+#, machine
+	{site} is getting too many requests from this computer: try again later.	{site} 收到来自此计算机的请求过多：请稍后重试。
 #. text in the Link grabber window
 #. Link grabber, a Hugging Face repository's or GitHub release's status (the cell's hover tip): the site ({site}: "Hugging Face", "GitHub") lets only so many requests through from a computer without an account; {n} minutes to wait
 #. {site} = a web site's name such as "example.com"; {n} = a number (keep the braces as they are)
@@ -8389,6 +8691,11 @@ menu	Download &video from a page...	从页面下载视频(&V)...
 #, machine
 menu	Download in order	按顺序下载
 #. menu command in the main window
+#. View → Draw with: opens a window offering to download Mesa's software renderer (llvmpipe, keep the name), which draws MDM's windows with far less of the processor than Windows' own (WARP)
+#. the trailing ... means it opens a window: keep it
+#, machine
+menu	Download Mesa's software renderer (llvmpipe)...	下载 Mesa 软件渲染器 (llvmpipe)...
+#. menu command in the main window
 #. View menu: submenu choosing what draws MDM's windows: OpenGL, or Direct3D, Vulkan or Metal (graphics systems)
 #, machine
 menu	Draw with	绘制方式
@@ -8623,6 +8930,18 @@ menu	Show &drop target	显示拖放目标(&D)
 #. menu command in the main window
 #, machine
 menu	Show Mister Download Manager	显示 Mister Download Manager
+#. menu command in the main window
+#. View → Draw with: a greyed note; Mesa's software renderer (llvmpipe, keep the name) failed on this computer, so Windows' own software renderer (WARP, keep the name) draws
+#, machine
+menu	Software (llvmpipe) didn't start here: WARP draws	软件 (llvmpipe) 未在此处启动：WARP 正在绘制
+#. menu command in the main window
+#. View → Draw with: a greyed note; Mesa's software renderer (llvmpipe, keep the name) is downloaded and draws the windows from MDM's next start
+#, machine
+menu	Software (llvmpipe) draws from the next start	软件 (llvmpipe) 将从下次启动起绘制
+#. menu command in the main window
+#. View → Draw with: a greyed note; what draws the windows: Mesa's software renderer, llvmpipe (keep the name), because no graphics card here has a driver MDM can draw with
+#, machine
+menu	Software (llvmpipe): no graphics card here has a driver for MDM	软件 (llvmpipe)：此计算机没有适用于 MDM 的显卡驱动程序
 #. menu command in the main window
 #. & marks the keyboard shortcut letter: keep one & before a letter of the translation
 menu	Speed &Limiter	限速器(&L)

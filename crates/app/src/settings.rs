@@ -316,6 +316,9 @@ pub struct Settings {
     /// The browser extension is offered at each start until a browser has it, unless "Don't ask
     /// again" was pressed (extension.rs).
     pub extension_never_ask: bool,
+    /// Mesa's software renderer was offered once, at a start drawn with Windows' WARP (#476,
+    /// softgl.rs); View → Draw with offers it from then on.
+    pub software_renderer_asked: bool,
     /// General: offer to download (Download File Info) links of the listed file types copied
     /// to the clipboard. On by default: without the browser extension, copying a link is the
     /// quickest way in.
@@ -402,6 +405,10 @@ pub struct Settings {
     /// Downloads → Customize "Download progress" dialog → Edit... (#1041): a download's
     /// progress window opens when it starts. Off, it runs in the list (double-click opens it).
     pub show_progress: bool,
+    /// The same dialog's third choice (#1966): the progress window starts minimized, on the
+    /// taskbar, and doesn't take the focus. Only when `show_progress` is on; a list from before
+    /// has neither it nor the choice: it opens normally.
+    pub show_progress_minimized: bool,
     pub only_add_to_queue: bool,
     pub start_immediately: bool,
     pub queue_panel_later: bool,
@@ -420,13 +427,20 @@ pub struct Settings {
     /// that names a download's server gives its number (`mdm_ipc::siterules::for_url`). A site
     /// rule's number of connections is the exception under its pattern.
     pub conn_exceptions: Vec<(String, u32)>,
-    /// Connection → Site rules (#1778): a User-Agent, the browser-like connection and request
-    /// headers by site pattern, the first rule that matches and sets each giving it. Their
-    /// numbers of connections are in `conn_exceptions`, which older versions read.
+    /// Connection → Site rules (#1778): a User-Agent, the browser-like connection, request
+    /// headers and a proxy (#1960) by site pattern, the first rule that matches and sets each
+    /// giving it. Their numbers of connections are in `conn_exceptions`, which older versions
+    /// read. A rule's proxy password is kept as the other secrets are (`sealed_rules`).
+    #[serde(with = "sealed_rules")]
     pub site_rules: Vec<mdm_ipc::siterules::SiteRule>,
     /// Proxy / Socks: 0 none, 1 system, 2 automatic script, 3 manual.
     pub proxy_from_browser: bool,
     pub proxy_mode: u8,
+    /// "No proxy/socks" was chosen on the Proxy / Socks page (#1616): clicked, or the browser
+    /// box unticked while it was on. yt-dlp and gallery-dl then go direct too (`Proxy::Direct`).
+    /// The untouched default, and a list saved before this setting (`proxy_mode: 0` says
+    /// nothing about who set it), keep them on the system's proxy, as before.
+    pub proxy_none_chosen: bool,
     pub proxy_script: String,
     pub proxy_host: String,
     pub proxy_port: String,
@@ -473,6 +487,11 @@ pub struct Settings {
     /// Windows account (`sealed_logins`).
     #[serde(with = "sealed_logins")]
     pub site_logins: Vec<(String, String, String)>,
+    /// HTTPS sites whose refused certificate the user chose "Always for this site" for (#1964),
+    /// pinned to `(host, port, sha256)`. Written even when empty: Options' OK applies only
+    /// the keys it changed (`merge_changes`), so a list emptied there must still be a key.
+    #[serde(default)]
+    pub allowed_certs: Vec<mdm_engine::AllowedCert>,
     /// Options → Accounts (#44): debrid service accounts, in the order they are asked.
     pub debrid_accounts: Vec<DebridAccount>,
     /// "Download supported file-host links through these accounts".
@@ -567,6 +586,13 @@ pub struct Settings {
     /// Download video from a page → Split into chapters: split video into multiple files based on
     /// chapters (with ffmpeg). Off; a settings file from before has none: off.
     pub video_split_chapters: bool,
+    /// Download video from a page → the video's thumbnail as an audio file's cover (#1962, with
+    /// ffmpeg). On; a settings file from before has none: on.
+    pub video_cover: bool,
+    /// Options → Regional → the sound language videos come in when they have several (#1961:
+    /// dubbed ones), for every video and playlist: a language's code (`de`, `pt-BR`); empty, the
+    /// default, for each video's original.
+    pub video_sound_language: String,
     /// Options → Sites Logins → Cookies for video sites (#229): the browser whose cookies
     /// yt-dlp reads on this computer when the extension passed none (yt-dlp's name: `firefox`,
     /// `chrome`...; empty: off, the default), and its profile (a name or a folder; empty: the
@@ -691,6 +717,7 @@ impl Default for Settings {
             language_asked: false,
             helpers_asked: false,
             extension_never_ask: false,
+            software_renderer_asked: false,
             clipboard_autostart: true,
             minimize_to_tray: true,
             tray_panel: true,
@@ -721,6 +748,7 @@ impl Default for Settings {
             mark_downloads: true,
             show_start_dialog: true,
             show_progress: true,
+            show_progress_minimized: false,
             only_add_to_queue: false,
             start_immediately: true,
             queue_panel_later: true,
@@ -732,6 +760,7 @@ impl Default for Settings {
             site_rules: Vec::new(),
             proxy_from_browser: true,
             proxy_mode: 0,
+            proxy_none_chosen: false,
             proxy_script: String::new(),
             proxy_host: String::new(),
             proxy_port: String::new(),
@@ -753,6 +782,7 @@ impl Default for Settings {
             net_adapter: String::new(),
             ftp_passive: true,
             site_logins: Vec::new(),
+            allowed_certs: Vec::new(),
             debrid_accounts: Vec::new(),
             debrid_on: true,
             debrid_torrents: false,
@@ -790,6 +820,8 @@ impl Default for Settings {
             video_subs: Default::default(),
             video_chapters: true,
             video_split_chapters: false,
+            video_cover: true,
+            video_sound_language: String::new(),
             video_cookies: String::new(),
             video_cookies_profile: String::new(),
             ytdlp_config: false,
@@ -881,6 +913,27 @@ impl Settings {
                 format!("debrid/{}", a.id),
                 &|| format!("Mister Download Manager: {} ({})", a.service.name(), a.user),
                 &a.secret,
+            );
+        }
+        // A site rule's proxy password (#1960), by its site and proxy user.
+        for (rule, d) in self.site_rules.iter().zip(&mut disk.site_rules) {
+            if rule.proxy_pass.is_empty() {
+                continue;
+            }
+            d.proxy_pass = kept(
+                format!(
+                    "siteproxy/{:016x}",
+                    fnv(&format!("{}\n{}", rule.site.trim(), rule.proxy_user))
+                ),
+                &|| {
+                    format!(
+                        "Mister Download Manager: {} {} ({})",
+                        crate::i18n::t("proxy server"),
+                        rule.proxy.as_deref().unwrap_or_default(),
+                        rule.site.trim()
+                    )
+                },
+                &rule.proxy_pass,
             );
         }
         for ((site, user, pw), d) in self.site_logins.iter().zip(&mut disk.site_logins) {
@@ -1147,6 +1200,9 @@ impl Settings {
             // "Use proxy/socks from a browser's request": browsers use Windows' proxy settings,
             // so with no proxy of our own so do we (none set there: direct, as before).
             _ if self.proxy_from_browser => system(),
+            // #1616: chosen on purpose, the helpers go direct too; the untouched default leaves
+            // them on the system's proxy.
+            0 if self.proxy_none_chosen => Proxy::Direct,
             _ => Proxy::None,
         }
     }
@@ -1189,8 +1245,15 @@ impl Settings {
     /// Why a download from the browser can't start (#42): its proxy asks for a login that the
     /// VPN or proxy extension gives, which MDM can't have. Going around it would show the
     /// user's own address, so the download stops and says so.
-    pub fn browser_proxy_refused(&self, context: &mdm_ipc::Command) -> Option<String> {
-        (self.proxy_from_browser && context.proxy_login).then(|| {
+    /// A site rule's proxy for the download's address (#1960) is the user's choice for that site:
+    /// nothing is refused then.
+    pub fn browser_proxy_refused(
+        &self,
+        url: &url::Url,
+        context: &mdm_ipc::Command,
+    ) -> Option<String> {
+        let rule_says = self.site_settings(url).proxy.is_some();
+        (self.proxy_from_browser && context.proxy_login && !rule_says).then(|| {
             // i18n: an error: the browser's VPN or proxy extension logs in to its proxy itself, and MDM can't; Options → Proxy / Socks → Network adapter is where an adapter can be chosen
             crate::i18n::t(
                 "the browser's proxy (a VPN or proxy extension) asks for a login only that extension has: use the VPN's own app, or choose its network adapter in Options → Proxy / Socks",
@@ -1238,6 +1301,17 @@ impl Settings {
     /// What the site rules and the exceptions give a download from `url` (#1778).
     pub fn site_settings(&self, url: &url::Url) -> mdm_ipc::siterules::Applied {
         mdm_ipc::siterules::for_url(&self.site_rules, &self.conn_exceptions, url)
+    }
+
+    /// The proxy for a download from `url` that came with `context`, before its own (its
+    /// Properties → Connection..., `requestedit::apply_own`): the first site rule that names it
+    /// and sets a proxy (#1960), else Options' ([`Self::proxy_for`]: the browser's, or Proxy /
+    /// Socks). Options' network adapter holds it all the same (`Options::route`).
+    pub fn download_proxy(&self, url: &url::Url, context: &mdm_ipc::Command) -> mdm_engine::Proxy {
+        match self.site_settings(url).proxy {
+            Some(rule) => mdm_tools::proc::rule_proxy(&rule),
+            None => self.proxy_for(context),
+        }
     }
 
     /// The Sites Logins entry for `url`: its site/path is a prefix of the address (without the
@@ -1496,12 +1570,28 @@ impl Settings {
 }
 
 /// Keep every yt-dlp run on Options' cookies for video sites (cheap when they didn't change)
-/// and on Use my yt-dlp config file, and every video started on Embed chapters (#827).
+/// and on Use my yt-dlp config file, every video started on Embed chapters (#827) and every
+/// sound on its cover (#1962), and the sound language chosen in Options (#1961).
 pub fn share_video_settings(s: &Settings) {
     mdm_tools::proc::set_browser_cookies(s.video_cookies());
     mdm_tools::proc::set_user_config(s.ytdlp_config);
     mdm_tools::video::set_chapters(s.video_chapters);
     mdm_tools::video::set_split_chapters(s.video_split_chapters);
+    mdm_tools::video::set_cover(s.video_cover);
+    // Shared at every frame: written only when it changed.
+    if *SOUND_LANGUAGE.read().unwrap_or_else(|e| e.into_inner()) != s.video_sound_language {
+        *SOUND_LANGUAGE.write().unwrap_or_else(|e| e.into_inner()) = s.video_sound_language.clone();
+    }
+}
+
+/// Options' sound language for videos (#1961), as `share_video_settings` last shared it.
+static SOUND_LANGUAGE: std::sync::RwLock<String> = std::sync::RwLock::new(String::new());
+
+/// The sound language videos come in when they have several (#1961, Options → Regional): a
+/// language's code, or none for each video's original.
+pub fn sound_language() -> Option<String> {
+    let l = SOUND_LANGUAGE.read().unwrap_or_else(|e| e.into_inner());
+    mdm_tools::resolve::language_code(&l)
 }
 
 /// The network adapter MDM's connections go through now (#35).
@@ -1541,6 +1631,14 @@ impl Settings {
                 (true, Some(p)) => mdm_cli::TorrentProxy::Through(p),
                 (true, None) => mdm_cli::TorrentProxy::Missing,
             },
+            // As the app's session takes them (`torrent_config`).
+            torrent_net: mdm_cli::TorrentNet {
+                dht: self.torrent_dht,
+                lsd: self.torrent_lsd,
+                upnp: self.torrent_upnp,
+                listen: self.torrent_incoming,
+                utp: self.torrent_utp,
+            },
             // The same switch, address and cache as the app's (#1776).
             public_trackers: self
                 .torrent_public_trackers
@@ -1556,6 +1654,33 @@ impl Settings {
                 exceptions: self.conn_exceptions.clone(),
             },
         }
+    }
+}
+
+impl Settings {
+    /// Pin `sha256` for `(host, port, problem)` (#1964), replacing any previous certificate for
+    /// that site and refusal reason.
+    pub fn allow_cert(
+        &mut self,
+        host: String,
+        port: u16,
+        sha256: String,
+        problem: mdm_engine::CertProblem,
+    ) {
+        if !problem.can_allow() {
+            return;
+        }
+        let host = host.to_ascii_lowercase();
+        let sha256 = sha256.to_ascii_lowercase();
+        self.allowed_certs.retain(|c| {
+            !(c.port == port && c.host.eq_ignore_ascii_case(&host) && c.problem == problem)
+        });
+        self.allowed_certs.push(mdm_engine::AllowedCert {
+            host,
+            port,
+            sha256,
+            problem,
+        });
     }
 }
 
@@ -1616,6 +1741,24 @@ mod tests {
         net.public_list = "  ".into();
         net.apply(&mut s);
         assert_eq!(s.public_trackers_list(), DEFAULT_LIST);
+    }
+
+    /// #1966: a settings file from before has only the bool (shown normally, never minimized);
+    /// the choice of three is saved as it was made.
+    #[test]
+    fn the_progress_window_is_shown_normally_until_asked_to_start_minimized() {
+        use super::Settings;
+        let old: Settings =
+            serde_json::from_value(serde_json::json!({ "show_progress": false })).unwrap();
+        assert!(!old.show_progress);
+        assert!(!old.show_progress_minimized);
+        let s = Settings {
+            show_progress: true,
+            show_progress_minimized: true,
+            ..Settings::default()
+        };
+        let again: Settings = serde_json::from_value(serde_json::to_value(&s).unwrap()).unwrap();
+        assert!(again.show_progress && again.show_progress_minimized);
     }
 
     /// #668: the User-Agent for links added by hand is the default browser's unless one is set.
@@ -1974,6 +2117,41 @@ mod tests {
             assert_eq!(r.takes_torrents(), on);
             assert_eq!(r.capture_min_kb, 7);
         }
+    }
+
+    /// #1616: "No proxy/socks" chosen on purpose is told apart from the untouched default: only
+    /// the choice keeps yt-dlp and gallery-dl direct (`Proxy::Direct`). A list from before (no
+    /// such key) reads as before, and the choice is kept across a save.
+    #[test]
+    fn no_proxy_chosen_is_told_apart_from_the_default() {
+        use mdm_engine::Proxy;
+        let read = |json: serde_json::Value| serde_json::from_value::<Settings>(json).unwrap();
+        // The untouched default: the browser box ticked, so the system's settings, as before.
+        assert_eq!(Settings::default().proxy(), Proxy::System);
+        // A list saved before #1616 with the box unticked: no proxy, the helpers as before.
+        let old = read(serde_json::json!({"proxy_mode": 0, "proxy_from_browser": false}));
+        assert!(!old.proxy_none_chosen);
+        assert_eq!(old.proxy(), Proxy::None);
+        let chosen = read(serde_json::json!({
+            "proxy_mode": 0,
+            "proxy_from_browser": false,
+            "proxy_none_chosen": true,
+        }));
+        assert_eq!(chosen.proxy(), Proxy::Direct);
+        assert!(!chosen.follows_system());
+        let saved = serde_json::to_value(&chosen).unwrap();
+        assert_eq!(saved["proxy_none_chosen"], true);
+        assert_eq!(read(saved).proxy(), Proxy::Direct);
+        // The browser box ticked: the browser's (Windows') proxy, as before, chosen or not.
+        let mut s = chosen.clone();
+        s.proxy_from_browser = true;
+        assert_eq!(s.proxy(), Proxy::System);
+        // Another mode: that mode's proxy; a manual one with no address typed: none, as before.
+        s.proxy_from_browser = false;
+        s.proxy_mode = 1;
+        assert_eq!(s.proxy(), Proxy::System);
+        s.proxy_mode = 3;
+        assert_eq!(s.proxy(), Proxy::None);
     }
 
     /// #1581: private-window downloads are kept in the list by default, for a new list and for
@@ -2352,6 +2530,7 @@ mod tests {
                 user_agent: "Rule/1".into(),
                 browser_like: true,
                 headers: vec![("X-A".into(), "1".into())],
+                ..Default::default()
             }],
             ..Settings::default()
         };
@@ -2366,6 +2545,93 @@ mod tests {
             serde_json::from_str(r#"{"conn_exceptions": [["ftp.slow.org", 1]]}"#).unwrap();
         assert!(old.site_rules.is_empty());
         assert_eq!(old.connections_for(&url("ftp://ftp.slow.org/a")), 1);
+    }
+
+    /// #1960: which proxy a download gets before its own: the first rule that names its site
+    /// and sets one (its own proxy with its login, or none), above Options' and the browser's;
+    /// Options' for every other site.
+    #[test]
+    fn a_site_rules_proxy_comes_before_options() {
+        use mdm_engine::Proxy;
+        use mdm_ipc::siterules::SiteRule;
+        let url = |u: &str| url::Url::parse(u).unwrap();
+        let s = Settings {
+            proxy_mode: 3,
+            proxy_host: "10.0.0.9".into(),
+            proxy_port: "3128".into(),
+            proxy_http: true,
+            proxy_https: true,
+            proxy_from_browser: true,
+            site_rules: vec![
+                SiteRule {
+                    site: "direct.example.test".into(),
+                    proxy: Some(String::new()),
+                    ..Default::default()
+                },
+                SiteRule {
+                    site: "*.example.test".into(),
+                    proxy: Some("socks5://127.0.0.1:1080".into()),
+                    proxy_user: "ann".into(),
+                    proxy_pass: "pw".into(),
+                    ..Default::default()
+                },
+                SiteRule {
+                    site: "agent.other.test".into(),
+                    user_agent: "A/1".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Settings::default()
+        };
+        let none = mdm_ipc::Command::default();
+        let options = s.proxy();
+        assert!(matches!(options, Proxy::Manual { .. }));
+        assert_eq!(
+            s.download_proxy(&url("https://dl.example.test/f"), &none),
+            Proxy::Manual {
+                url: "socks5://127.0.0.1:1080".into(),
+                login: Some(("ann".into(), "pw".into())),
+                http: true,
+                https: true,
+            }
+        );
+        assert_eq!(
+            s.download_proxy(&url("http://direct.example.test/f"), &none),
+            Proxy::None,
+            "the first match wins: straight to the server"
+        );
+        assert_eq!(
+            s.download_proxy(&url("https://agent.other.test/f"), &none),
+            options,
+            "a rule without a proxy: Options'"
+        );
+        assert_eq!(
+            s.download_proxy(&url("https://elsewhere.test/f"), &none),
+            options
+        );
+        // The browser's proxy (a VPN extension's) is Options' choice: a rule's comes first, and
+        // one that needs the extension's login isn't refused for a site the rule sends elsewhere.
+        let browser = mdm_ipc::Command {
+            proxy: Some("http://127.0.0.1:9999".into()),
+            proxy_login: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            s.download_proxy(&url("http://direct.example.test/f"), &browser),
+            Proxy::None
+        );
+        assert!(
+            s.browser_proxy_refused(&url("http://direct.example.test/f"), &browser)
+                .is_none()
+        );
+        assert!(
+            s.browser_proxy_refused(&url("https://elsewhere.test/f"), &browser)
+                .is_some()
+        );
+        assert_eq!(
+            s.download_proxy(&url("https://elsewhere.test/f"), &browser),
+            s.proxy_for(&browser)
+        );
     }
 
     #[test]
@@ -2414,6 +2680,39 @@ mod tests {
                 if url == "http://10.0.0.1:3128"
         ));
         assert!(!s.follows_system());
+    }
+}
+
+/// Site rules' proxy passwords on disk (#1960), as Sites Logins' are: in the system's keychain
+/// once it holds them (`Settings::for_disk`), else sealed as `sealed` seals them. A rule from
+/// before has none; a password that can't be opened reads as none.
+mod sealed_rules {
+    use mdm_ipc::siterules::SiteRule;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    use super::sealed::{open, seal};
+
+    pub fn serialize<S: Serializer>(v: &[SiteRule], s: S) -> Result<S::Ok, S::Error> {
+        if crate::secrets::is_prepared() {
+            return v.serialize(s);
+        }
+        v.iter()
+            .map(|r| SiteRule {
+                proxy_pass: seal(&r.proxy_pass),
+                ..r.clone()
+            })
+            .collect::<Vec<_>>()
+            .serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<SiteRule>, D::Error> {
+        let v = Vec::<SiteRule>::deserialize(d)?;
+        Ok(v.into_iter()
+            .map(|r| SiteRule {
+                proxy_pass: open(&r.proxy_pass),
+                ..r
+            })
+            .collect())
     }
 }
 
@@ -2566,6 +2865,43 @@ pub(crate) mod sealed {
             }
         }
 
+        /// #1960: a site rule's proxy password is never in the file as it is (sealed on
+        /// Windows; in the owner-only data folder elsewhere, as the other secrets), and reads
+        /// back; a rule without one writes none.
+        #[test]
+        fn a_site_rules_proxy_password_is_sealed_on_disk() {
+            use mdm_ipc::siterules::SiteRule;
+            let s = crate::settings::Settings {
+                site_rules: vec![
+                    SiteRule {
+                        site: "*.example.test".into(),
+                        proxy: Some("127.0.0.1:3128".into()),
+                        proxy_user: "ann".into(),
+                        proxy_pass: "rule-s3cret".into(),
+                        ..Default::default()
+                    },
+                    SiteRule {
+                        site: "direct.test".into(),
+                        proxy: Some(String::new()),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            };
+            let json = serde_json::to_string(&s).unwrap();
+            if cfg!(windows) {
+                assert!(!json.contains("rule-s3cret") && json.contains("dpapi:"));
+            }
+            let back: crate::settings::Settings = serde_json::from_str(&json).unwrap();
+            assert_eq!(back.site_rules, s.site_rules);
+            let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+            assert!(value["site_rules"][1].get("proxy_pass").is_none());
+            // A plain one (a hand-edited file) still reads.
+            let plain = serde_json::json!({ "site_rules": [{"site": "a.test", "proxy": "p.test:1", "proxy_user": "u", "proxy_pass": "pw"}] });
+            let old: crate::settings::Settings = serde_json::from_value(plain).unwrap();
+            assert_eq!(old.site_rules[0].proxy_pass, "pw");
+        }
+
         #[test]
         fn passwords_are_sealed_on_disk_and_read_back() {
             let s = crate::settings::Settings {
@@ -2595,6 +2931,71 @@ pub(crate) mod sealed {
             let s: crate::settings::Settings =
                 serde_json::from_value(serde_json::json!({ "close_to_tray": false })).unwrap();
             assert!(!s.close_to_tray);
+        }
+
+        #[test]
+        fn allowed_certs_are_saved_per_site_port_and_fingerprint() {
+            use mdm_engine::CertProblem;
+            let mut s = crate::settings::Settings::default();
+            s.allow_cert(
+                "NAS.Local".into(),
+                8443,
+                "AA".repeat(32),
+                CertProblem::Untrusted,
+            );
+            s.allow_cert(
+                "nas.local".into(),
+                8443,
+                "BB".repeat(32),
+                CertProblem::Untrusted,
+            );
+            s.allow_cert(
+                "nas.local".into(),
+                8443,
+                "BB".repeat(32),
+                CertProblem::Expired,
+            );
+            s.allow_cert(
+                "nas.local".into(),
+                443,
+                "CC".repeat(32),
+                CertProblem::WrongName,
+            );
+            // Revoked / NotForWebsites / Other are never allowed.
+            s.allow_cert(
+                "nas.local".into(),
+                443,
+                "DD".repeat(32),
+                CertProblem::Revoked,
+            );
+            assert_eq!(s.allowed_certs.len(), 3);
+            assert_eq!(s.allowed_certs[0].port, 8443);
+            assert_eq!(s.allowed_certs[0].sha256, "bb".repeat(32));
+            assert_eq!(s.allowed_certs[0].problem, CertProblem::Untrusted);
+            assert_eq!(s.allowed_certs[1].problem, CertProblem::Expired);
+            let json = serde_json::to_string(&s).unwrap();
+            let back: crate::settings::Settings = serde_json::from_str(&json).unwrap();
+            assert_eq!(back.allowed_certs, s.allowed_certs);
+        }
+
+        /// #1964: Options → Sites Logins → Certificates... removing the last allowed certificate
+        /// takes effect when OK merges the dialog's changes into the live settings.
+        #[test]
+        fn removing_the_last_allowed_cert_in_options_sticks() {
+            use crate::settings::Settings;
+            use mdm_engine::CertProblem;
+            let mut live = Settings::default();
+            live.allow_cert(
+                "nas.local".into(),
+                8443,
+                "ab".repeat(32),
+                CertProblem::Untrusted,
+            );
+            let from = live.clone();
+            let mut to = from.clone();
+            to.allowed_certs.clear();
+            let merged = Settings::merge_changes(&live, &from, &to);
+            assert!(merged.allowed_certs.is_empty());
         }
     }
 }

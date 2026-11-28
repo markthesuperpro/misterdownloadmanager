@@ -35,6 +35,55 @@ pub struct Offer {
     failed: Option<(Tool, String, Option<String>)>,
     /// An install started here ended well.
     installed_here: bool,
+    /// What the page reads from the disk ([`Found`]), read beside the window's thread (#1292):
+    /// until it is in, nothing is offered for install.
+    reading: Option<std::sync::mpsc::Receiver<Found>>,
+}
+
+/// What the helpers page reads from the disk: which helpers are there, and whether Node.js is
+/// offered (`None`: a runtime on the computer must be asked first, [`RuntimeProbe`]).
+struct Found {
+    have: Have,
+    node: Option<bool>,
+}
+
+impl Found {
+    /// Read it from the tools folder `dir` (and the system: the PATH, the runtimes' folders).
+    fn read(dir: Option<&std::path::Path>) -> Found {
+        let node = if !mdm_tools::jsruntime::available() {
+            Some(false)
+        } else {
+            match dir {
+                None => Some(false),
+                Some(d) => {
+                    let ytdlp = mdm_tools::installed(d).map(|i| i.exe);
+                    mdm_tools::jsruntime::current_now(Some(d), ytdlp.as_deref())
+                        .map(|found| found.is_none())
+                }
+            }
+        };
+        Found {
+            have: dir.map(Have::read).unwrap_or_default(),
+            node,
+        }
+    }
+}
+
+/// How long a window waits for its first read of the disk (none after): one that answers at
+/// once, as nearly all do, is shown at once (as the extension window's checks, #1218).
+const FIRST_WAIT: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Read `read` on a thread of its own; its answer when it comes within [`FIRST_WAIT`], else
+/// where it will come.
+fn read_beside<T: Send + 'static>(
+    name: &str,
+    read: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, std::sync::mpsc::Receiver<T>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    crate::launch::spawn(name, move || {
+        let _ = tx.send(read());
+    });
+    rx.recv_timeout(FIRST_WAIT).map_err(|_| rx)
 }
 
 /// An install's answer, once it ends: Err holds why, in words, and what to do about it.
@@ -81,10 +130,11 @@ struct RuntimeProbe {
 
 impl RuntimeProbe {
     /// Start it, if wanted and not started yet.
+    /// `ytdlp` says which yt-dlp the runtime is for, on the probe's thread (it may read files).
     fn start(
         &mut self,
         dir: Option<std::path::PathBuf>,
-        ytdlp: Option<std::path::PathBuf>,
+        ytdlp: impl FnOnce() -> Option<std::path::PathBuf> + Send + 'static,
         ctx: &egui::Context,
     ) {
         if !self.wanted || self.slot.is_some() {
@@ -93,6 +143,7 @@ impl RuntimeProbe {
         let slot = Arc::new(Mutex::new(None));
         let (out, wake) = (slot.clone(), ctx.clone());
         std::thread::spawn(move || {
+            let ytdlp = ytdlp();
             let found = mdm_tools::jsruntime::current(dir.as_deref(), ytdlp.as_deref());
             *out.lock().unwrap() = Some(found);
             wake.request_repaint();
@@ -125,34 +176,75 @@ const ROWS_TOP: f32 = 12.0;
 const ROW: f32 = 72.0;
 
 impl Offer {
-    /// Runs no program: a runtime that must be asked is asked from `page`, off its thread.
+    /// Runs no program: a runtime that must be asked is asked from `page`, off its thread. What
+    /// is there is read beside the window's thread (#1292).
     pub fn new() -> Self {
-        Self::with_dir(mdm_tools::tools_dir())
+        let dir = mdm_tools::tools_dir();
+        let looking = dir.clone();
+        match read_beside("helpers: what is there", move || {
+            Found::read(looking.as_deref())
+        }) {
+            Ok(found) => Self::with_found(dir, found),
+            Err(rx) => {
+                let mut offer = Self::with_found(
+                    dir,
+                    Found {
+                        have: Have::default(),
+                        node: Some(false),
+                    },
+                );
+                offer.reading = Some(rx);
+                offer
+            }
+        }
     }
 
-    /// [`Offer::new`] for the tools folder `dir`.
+    /// [`Offer::new`] for the tools folder `dir`, read here (the tests).
+    #[cfg(test)]
     fn with_dir(dir: Option<std::path::PathBuf>) -> Self {
-        let mut probe = RuntimeProbe::default();
-        let node = mdm_tools::jsruntime::available()
-            && dir.as_deref().is_some_and(|d| {
-                let ytdlp = mdm_tools::installed(d).map(|i| i.exe);
-                match mdm_tools::jsruntime::current_now(Some(d), ytdlp.as_deref()) {
-                    Some(found) => found.is_none(),
-                    // A runtime is there, to be asked: none offered until it answers.
-                    None => {
-                        probe.wanted = true;
-                        false
-                    }
-                }
-            });
-        Offer {
-            have: dir.as_deref().map(Have::read).unwrap_or_default(),
+        let found = Found::read(dir.as_deref());
+        Self::with_found(dir, found)
+    }
+
+    /// The page for the tools folder `dir`, with what it has (`found`).
+    fn with_found(dir: Option<std::path::PathBuf>, found: Found) -> Self {
+        let mut offer = Offer {
+            have: Have::default(),
             dir,
-            node,
-            probe,
+            node: false,
+            probe: RuntimeProbe::default(),
             installs: Vec::new(),
             failed: None,
             installed_here: false,
+            reading: None,
+        };
+        offer.take(found);
+        offer
+    }
+
+    /// What was read from the disk ([`Found`]), in use.
+    fn take(&mut self, found: Found) {
+        self.have = found.have;
+        // A runtime is there, to be asked: none offered until it answers.
+        self.node = found.node.unwrap_or(false);
+        if found.node.is_none() {
+            self.probe.wanted = true;
+        }
+    }
+
+    /// The read beside the window's thread, once it is in ([`Offer::new`]).
+    fn read_in(&mut self, ctx: &egui::Context) {
+        use std::sync::mpsc::TryRecvError;
+        match self.reading.as_ref().map(|rx| rx.try_recv()) {
+            Some(Ok(found)) => {
+                self.reading = None;
+                self.take(found);
+            }
+            Some(Err(TryRecvError::Disconnected)) => self.reading = None,
+            Some(Err(TryRecvError::Empty)) => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(50));
+            }
+            None => {}
         }
     }
 
@@ -176,6 +268,7 @@ impl Offer {
     /// it for this system (ffmpeg only on Windows: elsewhere the system's is used).
     fn installable(&self, t: Tool) -> bool {
         self.dir.is_some()
+            && self.reading.is_none()
             && !self.have.of(t)
             && !self.installing(t)
             && (t != Tool::Ffmpeg || cfg!(windows))
@@ -229,8 +322,16 @@ impl Offer {
                 None => {}
             }
         }
-        if let Some(dir) = self.dir.as_deref() {
-            self.have = Have::read(dir);
+        if let Some(dir) = self.dir.clone() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let node = self.node;
+            crate::launch::spawn("helpers: what is there", move || {
+                let _ = tx.send(Found {
+                    have: Have::read(&dir),
+                    node: Some(node),
+                });
+            });
+            self.reading = Some(rx);
         }
     }
 
@@ -257,13 +358,12 @@ impl Offer {
     /// it is there, its Install button or its progress), the promise that they are official and
     /// checked, and how it stands. Its height.
     pub fn page(&mut self, ui: &mut Ui, o: Pos2, w: f32, rt: &tokio::runtime::Handle) -> f32 {
+        // What is there, read beside the window's thread (#1292).
+        self.read_in(ui.ctx());
         // The computer's runtime, asked off this thread: Node.js offered if none will do (only
         // before an install starts, so the rows stay as they were when it was pressed).
-        let ytdlp = self
-            .dir
-            .as_deref()
-            .and_then(mdm_tools::installed)
-            .map(|i| i.exe);
+        let dir = self.dir.clone();
+        let ytdlp = move || dir.as_deref().and_then(mdm_tools::installed).map(|i| i.exe);
         self.probe.start(self.dir.clone(), ytdlp, ui.ctx());
         if let Some(found) = self.probe.answer()
             && self.installs.is_empty()
@@ -316,14 +416,19 @@ impl Offer {
             );
             // Its state, at the row's end: there, downloading, or its Install button.
             if self.have.of(t) {
-                let there = format!(
-                    "\u{2714} {}",
-                    // i18n: the first start's video helpers: beside a helper that is there already (MDM's own copy or the system's)
-                    crate::i18n::t("Installed")
+                // i18n: the first start's video helpers: beside a helper that is there already (MDM's own copy or the system's)
+                let there = crate::i18n::t("Installed");
+                // A drawn check before it (#2008), the same on every system.
+                let rc = winui::marked_text_right(
+                    ui,
+                    &p,
+                    o.x + w - 18.0,
+                    o.y + y + 17.0,
+                    crate::icons::Mark::Ok,
+                    there,
+                    winui::SUCCESS(),
                 );
-                let (rc, _) =
-                    winui::text_right(&p, o.x + w - 18.0, o.y + y + 17.0, &there, winui::SUCCESS());
-                winui::readable(ui, rc, ("helpers-there", k), &there);
+                winui::readable(ui, rc, ("helpers-there", k), there);
             } else if self.installing(t) {
                 let progress = self
                     .dir
@@ -438,6 +543,9 @@ impl Offer {
         // A failure is a polite live region: a screen reader speaks it as it comes, without the
         // focus; the other lines never are (#1407, #1978).
         let at = (o.x + 18.0, o.y + y + 13.0, o.x + text_end);
+        // A failure's line starts with its mark (#2008).
+        let mark = self.failed.is_some().then_some(crate::icons::Mark::Fail);
+        let at = (winui::note_mark(ui, &p, at.0, at.1, mark), at.1, at.2);
         let lines = if self.failed.is_some() {
             winui::readable_paragraph_live(
                 ui,
@@ -625,6 +733,59 @@ pub struct Programs {
     /// Check for updates, an Update or a Go back under way, and how it went.
     updating: Option<Answer>,
     error: Option<String>,
+    /// The helpers are read beside the window's thread (#1292; the app's window, not the tests).
+    beside: bool,
+    /// That read, on its way: the rows show what was read before until it is in.
+    reading: Option<std::sync::mpsc::Receiver<ProgramsRead>>,
+}
+
+/// What the Helpers window reads from the disk ([`Programs::look`]).
+struct ProgramsRead {
+    found: [Option<mdm_tools::Installed>; 3],
+    /// The runtime, when it could be told without running anything (`jsruntime::current_now`).
+    runtime: Option<Option<mdm_tools::jsruntime::Runtime>>,
+    own: [Own; 4],
+    updates: mdm_tools::autoupdate::State,
+}
+
+impl ProgramsRead {
+    /// Read it from the tools folder `dir` (and the system's PATH).
+    fn read(dir: &std::path::Path) -> ProgramsRead {
+        let found = [
+            mdm_tools::installed(dir),
+            mdm_tools::ffmpeg::installed(dir),
+            mdm_tools::gallery::installed(dir),
+        ];
+        let ytdlp = found[0].as_ref().map(|i| i.exe.as_path());
+        let runtime = mdm_tools::jsruntime::current_now(Some(dir), ytdlp);
+        let updates = mdm_tools::autoupdate::read(dir);
+        let mut own: [Own; 4] = Default::default();
+        for t in Tool::ALL {
+            use mdm_tools::autoupdate as au;
+            let root = t.root(dir);
+            let current = au::own(dir, t);
+            let newer_than_current = |i: &mdm_tools::Installed, older: bool| {
+                current.as_ref().is_some_and(|c| {
+                    if older {
+                        mdm_tools::autoupdate::is_newer(&c.version, &i.version)
+                    } else {
+                        mdm_tools::autoupdate::is_newer(&i.version, &c.version)
+                    }
+                })
+            };
+            own[t as usize] = Own {
+                previous: au::previous_in(&root).filter(|p| newer_than_current(p, true)),
+                staged: au::staged_in(&root).filter(|s| newer_than_current(s, false)),
+                current,
+            };
+        }
+        ProgramsRead {
+            found,
+            runtime,
+            own,
+            updates,
+        }
+    }
 }
 
 /// MDM's own copy of a tool, as its updates stand.
@@ -638,6 +799,28 @@ struct Own {
 }
 
 const HELPERS: [Helper; 3] = [Helper::YtDlp, Helper::Ffmpeg, Helper::GalleryDl];
+
+/// Each row's role icon (#2008), the first start's own (a new one for gallery-dl), and where
+/// its texts and buttons start after it.
+const ROLE_ICON: f32 = 24.0;
+const INSET: f32 = 14.0 + ROLE_ICON + 8.0;
+
+/// A helper's role icon, as the first start's video helpers show it.
+fn role_icon(h: Helper) -> Icon {
+    match h {
+        Helper::YtDlp => Icon::HelperVideo,
+        Helper::Ffmpeg => Icon::HelperMerge,
+        Helper::GalleryDl => Icon::HelperGallery,
+    }
+}
+
+/// `icon` at a row's start, its top at window `y` (English), on whole pixels.
+fn paint_role(ui: &Ui, o: Pos2, y: f32, icon: Icon) {
+    use egui::emath::GuiRounding as _;
+    let rc = r(o, 14.0, y - o.y + 4.0, ROLE_ICON, ROLE_ICON)
+        .round_to_pixels(ui.ctx().pixels_per_point());
+    icon.image(true).paint_at(ui, rc);
+}
 
 /// The tool a helper row is.
 fn tool_of(h: Helper) -> Tool {
@@ -721,13 +904,28 @@ const UPDATED_SHOWN: i64 = 3 * 24 * 3600;
 type Answer = Arc<Mutex<Option<Result<(), String>>>>;
 
 impl Programs {
+    /// What is there is read beside the window's thread (#1292); the window waits for it at most
+    /// [`FIRST_WAIT`] the first time.
     pub fn new() -> Self {
-        Self::with_dir(mdm_tools::tools_dir())
+        let mut p = Self::made(mdm_tools::tools_dir(), true);
+        if let Some(rx) = p.reading.take() {
+            match rx.recv_timeout(FIRST_WAIT) {
+                Ok(read) => p.take(read),
+                Err(_) => p.reading = Some(rx),
+            }
+        }
+        p
     }
 
-    /// [`Programs::new`] for the tools folder `dir`; runs no program (the runtime, when the
-    /// computer's must be asked, is asked from `show`, off the window's thread).
+    /// [`Programs::new`] for the tools folder `dir`, read here (the tests).
+    #[cfg(test)]
     fn with_dir(dir: Option<std::path::PathBuf>) -> Self {
+        Self::made(dir, false)
+    }
+
+    /// The window for the tools folder `dir`; runs no program (the runtime, when the
+    /// computer's must be asked, is asked from `show`, off the window's thread).
+    fn made(dir: Option<std::path::PathBuf>, beside: bool) -> Self {
         let mut p = Programs {
             dir,
             found: [None, None, None],
@@ -742,23 +940,50 @@ impl Programs {
             updating: None,
             error: None,
             probe: RuntimeProbe::default(),
+            beside,
+            reading: None,
         };
         p.look();
         p
     }
 
+    /// Read the helpers again: here, or beside the window's thread ([`Programs::read_in`]).
     fn look(&mut self) {
-        let Some(dir) = self.dir.as_deref() else {
+        let Some(dir) = self.dir.clone() else {
             return;
         };
         self.seen = mdm_tools::autoupdate::generation();
-        self.found = [
-            mdm_tools::installed(dir),
-            mdm_tools::ffmpeg::installed(dir),
-            mdm_tools::gallery::installed(dir),
-        ];
-        let ytdlp = self.found[0].as_ref().map(|i| i.exe.as_path());
-        match mdm_tools::jsruntime::current_now(Some(dir), ytdlp) {
+        if !self.beside {
+            self.take(ProgramsRead::read(&dir));
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        crate::launch::spawn("helpers: what is there", move || {
+            let _ = tx.send(ProgramsRead::read(&dir));
+        });
+        self.reading = Some(rx);
+    }
+
+    /// The read beside the window's thread, once it is in ([`Programs::look`]).
+    fn read_in(&mut self, ctx: &egui::Context) {
+        use std::sync::mpsc::TryRecvError;
+        match self.reading.as_ref().map(|rx| rx.try_recv()) {
+            Some(Ok(read)) => {
+                self.reading = None;
+                self.take(read);
+            }
+            Some(Err(TryRecvError::Disconnected)) => self.reading = None,
+            Some(Err(TryRecvError::Empty)) => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(50));
+            }
+            None => {}
+        }
+    }
+
+    /// What was read ([`ProgramsRead`]), in use.
+    fn take(&mut self, read: ProgramsRead) {
+        self.found = read.found;
+        match read.runtime {
             Some(found) => {
                 self.runtime = found;
                 self.probe = RuntimeProbe::default();
@@ -771,26 +996,8 @@ impl Programs {
                 };
             }
         }
-        self.updates = mdm_tools::autoupdate::read(dir);
-        for t in Tool::ALL {
-            use mdm_tools::autoupdate as au;
-            let root = t.root(dir);
-            let current = au::own(dir, t);
-            let newer_than_current = |i: &mdm_tools::Installed, older: bool| {
-                current.as_ref().is_some_and(|c| {
-                    if older {
-                        mdm_tools::autoupdate::is_newer(&c.version, &i.version)
-                    } else {
-                        mdm_tools::autoupdate::is_newer(&i.version, &c.version)
-                    }
-                })
-            };
-            self.own[t as usize] = Own {
-                previous: au::previous_in(&root).filter(|p| newer_than_current(p, true)),
-                staged: au::staged_in(&root).filter(|s| newer_than_current(s, false)),
-                current,
-            };
-        }
+        self.updates = read.updates;
+        self.own = read.own;
     }
 
     /// MDM's own Node.js (#1570): downloaded and checked against its release's signed checksums,
@@ -907,9 +1114,10 @@ impl Programs {
 
     /// Open until Close.
     pub fn show(&mut self, ctx: &egui::Context, rt: &tokio::runtime::Handle) -> Outcome<()> {
+        self.read_in(ctx);
         // The runtime, when the computer's must be asked: off this thread.
         let ytdlp = self.found[0].as_ref().map(|i| i.exe.clone());
-        self.probe.start(self.dir.clone(), ytdlp, ctx);
+        self.probe.start(self.dir.clone(), move || ytdlp, ctx);
         if let Some(found) = self.probe.answer() {
             self.runtime = found;
         }
@@ -1065,10 +1273,11 @@ impl Programs {
         let p = ui.painter().clone();
         for (k, h) in HELPERS.into_iter().enumerate() {
             let y = o.y + 8.0 + k as f32 * 78.0;
+            paint_role(ui, o, y, role_icon(h));
             let name_rc = winui::text_font(
                 &p,
                 winui::tahoma_bold(),
-                o.x + 14.0,
+                o.x + INSET,
                 y + 16.0,
                 h.name(),
                 winui::TEXT(),
@@ -1149,7 +1358,7 @@ impl Programs {
             let status_rc = winui::fit(
                 ui,
                 &p,
-                o.x + 14.0,
+                o.x + INSET,
                 y + 36.0,
                 &status,
                 winui::MUTED(),
@@ -1159,7 +1368,7 @@ impl Programs {
             winui::readable(ui, status_rc, ("helper-status", k), &status);
             // Its updates: MDM's own copy's, or the person's to make (#1544).
             let name_end =
-                o.x + 14.0 + winui::text_width_font(&p, winui::tahoma_bold(), h.name()) + 10.0;
+                o.x + INSET + winui::text_width_font(&p, winui::tahoma_bold(), h.name()) + 10.0;
             let updates = if found.is_some_and(|i| mine || i.is_system()) {
                 // i18n: Helpers: a program the person chose, or the system's copy: MDM doesn't update it, the person (or their package manager) does
                 Some(crate::i18n::t("Updated by you").to_owned())
@@ -1173,8 +1382,8 @@ impl Programs {
             let [other_at, own_at] = winui::button_row_from_left(
                 &p,
                 &[
-                    ("Use another program...", 14.0, 180.0),
-                    (own_label, 202.0, 180.0),
+                    ("Use another program...", INSET, 180.0),
+                    (own_label, INSET + 188.0, 180.0),
                 ],
                 8.0,
                 486.0,
@@ -1300,10 +1509,17 @@ impl Programs {
         let y = 370.0;
         // What failed, left of the buttons.
         if let Some(e) = &self.error {
-            let rc = winui::fit(
+            let x = winui::note_mark(
                 ui,
                 &p,
                 o.x + 14.0,
+                o.y + y + 15.0,
+                Some(crate::icons::Mark::Fail),
+            );
+            let rc = winui::fit(
+                ui,
+                &p,
+                x,
                 o.y + y + 15.0,
                 e,
                 winui::ERROR(),
@@ -1493,10 +1709,11 @@ impl Programs {
         let y = o.y + 8.0 + k as f32 * 78.0;
         // i18n: Video helpers: the row of the JavaScript runtime (Node.js, Deno...) yt-dlp needs for YouTube's videos
         let title = crate::i18n::t("JavaScript runtime (for YouTube)");
+        paint_role(ui, o, y, Icon::HelperScript);
         let title_rc = winui::text_font(
             p,
             winui::tahoma_bold(),
-            o.x + 14.0,
+            o.x + INSET,
             y + 16.0,
             title,
             winui::TEXT(),
@@ -1514,14 +1731,14 @@ impl Programs {
         let after = winui::text_width_font(p, winui::tahoma_bold(), title) + 10.0;
         let updates = own_node.then(|| self.update_status(Tool::Node)).flatten();
         if own_node {
-            self.update_row(ui, p, o, y, o.x + 14.0 + after, Tool::Node, None, rt);
+            self.update_row(ui, p, o, y, o.x + INSET + after, Tool::Node, None, rt);
         } else {
             // i18n: Video helpers: what the JavaScript runtime is for, after its name (yt-dlp is a program's name)
             let what = crate::i18n::t("lets yt-dlp list all of YouTube's qualities");
             let what_rc = winui::fit(
                 ui,
                 p,
-                o.x + 14.0 + after,
+                o.x + INSET + after,
                 y + 16.0,
                 what,
                 winui::MUTED(),
@@ -1588,7 +1805,7 @@ impl Programs {
         let status_rc = winui::fit(
             ui,
             p,
-            o.x + 14.0,
+            o.x + INSET,
             y + 36.0,
             &status,
             winui::MUTED(),
@@ -1615,8 +1832,8 @@ impl Programs {
         let [other_at, own_at] = winui::button_row_from_left(
             p,
             &[
-                ("Use another program...", 14.0, 180.0),
-                (own_label, 202.0, 180.0),
+                ("Use another program...", INSET, 180.0),
+                (own_label, INSET + 188.0, 180.0),
             ],
             8.0,
             486.0,
